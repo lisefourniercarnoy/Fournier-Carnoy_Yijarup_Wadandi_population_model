@@ -7,7 +7,7 @@ data/
 plots/
 
 # this is a small folder with non-essential QGIS projects
-qgis_folders/
+qgis_projects/
 
 # and simulations, which at this point are dummy simulations we don't need to keep track of
 simulations/
