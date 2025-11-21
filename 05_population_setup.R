@@ -1,0 +1,401 @@
+# -----------------------------------------------------------------------------
+
+# Project: Wadandi Pink Snapper Population Model
+# Data:    ?
+# Task:    Set up populations
+# Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
+# Date:    April 2025
+
+# -----------------------------------------------------------------------------
+
+# Status:  Several parameters need changing. otherwise ready for a dummy run.
+
+# -----------------------------------------------------------------------------
+
+rm(list = ls())
+
+# Load libraries
+
+library(tidyverse)
+library(sf)
+library(raster)
+library(stringr)
+library(forcats)
+library(RColorBrewer)
+library(geosphere)
+library(abind)
+
+colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
+
+## Life history parameters ----------------------------------------------------
+
+# Set timestep 
+step = 1/12 # monthly timestep
+
+
+# Von Bertalanffy Parameters (from Table 2, lower west coast, both sexes combined, https://academic.oup.com/icesjms/article/74/1/180/2669555?login=false#186901916)
+# we're not using this anymore, see schnute below
+# Linf  <- 1136 # hypothetical asymptotic length at infinite age (mm)
+# k     <- 0.12 # growth coefficient, (/year)
+# t0    <- -0.42 # hypothetical age at length = 0 (y)
+
+# Schnute equation parameters - found to fit Yijarup better, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+l1 <- 0
+l2 <- (927.2 + 915.9)/2 # average of females and males
+t1 <- 0
+t2 <- 20
+a <- (0.160 + 0.168)/2 # average of females and males
+b <- (1.239 + 1.206)/2
+
+# Weight-Length Relationship (W = WLa*(forklength^WLb)) , table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+WLa <- 3.67*10^-5
+WLb <- 2.83
+
+# Proportion expected to be females
+prop_f <- 0.5
+
+# Natural Mortality
+M <- 0.12 # , table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+
+# Beverton-Holt Parameters
+h   <- 0.75 # table 7.4 p.68 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+R0  <- 1 # Initial recruitment, not referenced, not changed from charlotte
+
+max_age <- 40 # , table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+
+# Age at Maturity
+M50 <- (6.7 + 5.5)/2 # female male average, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+M95 <- (12.9 + 12.3)/2 # female male average, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+hyperallo <- (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+
+## Fishing parameters ---------------------------------------------------------
+
+# Selectivity - for now considered as the same for rec and commercial fishing, as even Wise et al. 2007 group them together, p.99. https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1206&context=fr_rr#page=94.59 
+A50 <- 3.701 # Table 6.3.8, v50 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
+A95 <-  5.290 # Table 6.3.8, v95 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
+
+n_yrs <- 2024-1945 # number of years modelled
+
+PRM <- 0.25 # Post release mortality for our retention function - NOT CHANGED FROM CHARLOTTE
+# McLennan et al. 2014 finds post-release surival after barotrauma treatment to be 88%, same for all depths, all sizes of fish.
+# Maggs et al. 2024 finds the hook site (lip, body or gut) and depth both sig. affects PRM.
+# Grixti et al. 2010 finds that PRM in deep waters (48%) is lower than shallow (97%).
+
+
+# Fishing parameters
+eq.init.fish <-  0.025 # NOT CHANGED FROM CHARLOTTE, dont know what that is
+
+
+## Set up life history values -------------------------------------------------
+
+life_hist <- as.data.frame(array(1, dim = c((max_age*12), 3))) %>%
+  rename(age = "V1") %>% 
+  rename(length = "V2") %>% 
+  rename(weight = "V3") %>% 
+  glimpse()
+
+ages <- seq(1, 1 + step * (max_age * 12 - 1), by = step) # ages monthly from year 1 to max year (40) in decimals
+
+
+life_hist <- data.frame(age = ages) %>%
+  mutate(length = ((l1^b+(l2^b-l1^b))*((1-exp(-a*(age-t1)))/(1-exp(-a*(t2-t1)))))^(1/b), # this is the Schnute equation, replaces the VB equation.
+         #length_vb = Linf * (1 - exp(-k * (age - t0))), #this is the old VB equation
+         weight = WLa * (length^WLb) / 1000) # Divide by 1000 to get in kg 
+
+
+## Set up survival and maturity for the unfished population -------------------
+
+unfished_pop_setup <- as.data.frame(array(1, dim = c((max_age*12), 3))) %>% 
+  rename(unfished_surv = "V1") %>% # survival
+  rename(unfished_mat = "V2") %>% # maturity
+  rename(unfished_bio = "V3") %>% # biomass
+  glimpse()
+
+
+# Survival in each age group
+unfished_pop_setup[1, 1] <- R0*prop_f # survival probability on age 1
+for (r in 2:(max_age*12)){ # This calculates the survival in the next age based on the previous age
+  unfished_pop_setup[r, 1] <- unfished_pop_setup[r-1, 1]*exp(-M/12) 
+}
+head(unfished_pop_setup) # survival of the unfished population decreases a bit at every age, with an initial value of 0.5 on day 1
+
+
+# Proportion of mature individuals per recruit in each age group
+unfished_pop_setup <- unfished_pop_setup %>% 
+  mutate(age = life_hist$age) %>% 
+  mutate(unfished_mat = 1/(1+(exp(-log(19)*((age-M50)/(M95-M50)))))) %>% 
+  glimpse()
+
+# Mature biomass per recruit in each age group
+unfished_pop_setup <- unfished_pop_setup %>% 
+  mutate(unfished_bio = unfished_mat * unfished_surv * life_hist$weight)
+head(unfished_pop_setup)
+
+# Total mature biomass per recruit
+unfished_f_ssb <- unfished_pop_setup %>%  # This is the total mature female spawning biomass per recruit for the unfished population
+  slice(which(row_number() %% 12 == 1)) %>% 
+  summarise(., sum = sum(unfished_bio))
+
+# quick explanation: survival decreases with age, expected with natural mortality
+# maturity increases then plateaus
+# biomass increases (fish grow) then decreases again (when natural mortality wipes out a good number of them)
+matplot(x = unfished_pop_setup[4], y = unfished_pop_setup[1:3], type = "l", lty = 1, lwd = 2,
+        col = 1:ncol(unfished_pop_setup), xlab = "age", ylab = "probability")
+legend("right", legend = colnames(unfished_pop_setup)[1:3],
+       col = 1:ncol(unfished_pop_setup[1:3]), lty = 1, lwd = 2)
+
+
+## Calculate Beverton-Holt parameters for the unfished population -------------
+
+alpha <- (unfished_f_ssb/R0)*((1-h)/(4*h)) # BHa for the 05_burn_in script
+
+beta <- ((h-0.2)/(0.8*h*R0)) # BHb for the 05_burn_in_script
+
+
+## Set up survival and maturity for the fished population ---------------------
+
+fished_pop_setup <- as.data.frame(array(1, dim  = c((max_age*12), 5))) %>% 
+  rename(selectivity = "V1",
+         fishing_mort = "V2",
+         tot_mort = "V3",
+         fished_surv = "V4",
+         fished_mat = "V5") %>% 
+  glimpse()
+
+# Selectivity for each age group - This is for the equilibrium population
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(age = life_hist$age) %>% 
+  mutate(length = life_hist$length) %>% 
+  mutate(selectivity = 1/(1+(exp(-log(19)*((age-A50)/(A95-A50))))))
+
+# Next calculate fishing mortality 
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(fishing_mort = selectivity * eq.init.fish) %>% 
+  glimpse()
+
+# Calculate total mortality
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(tot_mort = fishing_mort + M) %>% 
+  glimpse()
+
+# Calculate Fished Survival
+fished_pop_setup[1, 4] <- R0*prop_f # survival probability on day 1
+for (r in 2:(max_age*12)){ # survival of day + 1 based on survival of the previous day.
+  fished_pop_setup[r, 4] <- fished_pop_setup[r-1, 4]*exp(-fished_pop_setup[r-1,3]*step) # Divide by the time step here
+}
+head(fished_pop_setup)
+
+
+# Calculate Mature Fished Biomass per Recruit
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(fished_mat = unfished_pop_setup$unfished_mat,
+         fished_bio = fished_mat * fished_surv * life_hist$weight) %>% 
+  glimpse()
+
+# below shows the difference between the fished and unfished populations: 
+# fished pop has lower biomass (makes sense if you're fishing)
+# maturity (makes sense, it's not affected by fishing)
+# survival is a steeper decline in the fished population (again makes sense if you're fishing) - slight but there is a diff.
+matplot(
+  x = fished_pop_setup$age, 
+  y = fished_pop_setup[,c("selectivity", "fishing_mort", "tot_mort", "fished_surv", "fished_mat", "fished_bio")],
+  type = "l", lty = 1, lwd = 2,
+  col = 1:6,  # 6 columns being plotted
+  xlab = "Age", ylab = "Value"
+)
+legend("right", legend = colnames(fished_pop_setup[c("selectivity", "fishing_mort", "tot_mort", "fished_surv", "fished_mat", "fished_bio")]),
+       col = 1:ncol(fished_pop_setup), lty = 1, lwd = 2)
+
+
+
+# plot check comparisons
+plot(x = unfished_pop_setup$age, y = unfished_pop_setup$unfished_surv); points(x = fished_pop_setup$age, y = fished_pop_setup$fished_surv, col = "red", add = T)
+legend("topright", legend = c("survival from unfished population", "survival from fished population"), col = c("black", "red"), lty = 1, lwd = 2)
+
+plot(x = unfished_pop_setup$age, y = unfished_pop_setup$unfished_bio); points(x = fished_pop_setup$age, y = fished_pop_setup$fished_bio, col = "red", add = T)
+legend("topright", legend = c("biomass from unfished population", "biomass from fished population"), col = c("black", "red"), lty = 1, lwd = 2)
+
+
+# Calculate the Total Mature Fished Biomass per Recruit
+fished_f_ssb <- fished_pop_setup %>%  # This is the total mature female spawning biomass per recruit for the fished population
+  slice(which(row_number() %% 12 == 1)) %>% 
+  summarise(., sum = sum(fished_bio))
+
+
+
+## Spawner per recruit and equilibrium recruitment ----------------------------
+
+# ngl idk what this does
+spr <- fished_f_ssb/unfished_f_ssb
+equil_recr <- (fished_f_ssb-alpha)/(beta*fished_f_ssb)
+
+
+## Initial equilibrium population for the model -------------------------------
+
+## Our initial population uses all the numbers from the previous step of this code 
+## The maturity at age, weight at age, fished per recruit survival
+## the proportion of females at age
+## We also need to decide on an initial level of recruitment (in thousands)
+
+init_recr <- 5000 # in thousands - normally 5000 for big model, 5 for small model
+
+# Calculate initial fished recruitment
+init_fish_recr <- (fished_f_ssb-alpha) / (fished_f_ssb*beta) * init_recr 
+
+# Calculate initial unfished spawning biomass
+init_unfished_f_sb <- init_fish_recr * unfished_f_ssb
+
+# Calculate initial fished spawning biomass
+init_f_sb <- init_fish_recr * fished_f_ssb
+
+# Calculate new Beverton-Holt parameters
+alpha <- (init_unfished_f_sb / init_fish_recr) * ((1-h) / (4*h))
+beta <- ((h-0.2) / (0.8*h*init_fish_recr))
+
+# Calculate number of female recruits in the next time step
+n_f_recr <- (init_unfished_f_sb/(alpha+beta*init_f_sb))*prop_f
+
+# Calculate survival into the next time step to create a full age structured population
+starting_pop <- as.data.frame(array(1, dim=c((max_age*12), 1)))
+
+starting_pop <- starting_pop %>% 
+  mutate(age = life_hist$age) 
+
+starting_pop[1,1] <- n_f_recr
+
+for (r in 2:(max_age*12)){ # This calculates the survival in the next age based on the previous age using total mortality from our fished population
+  starting_pop[r, 1] <- starting_pop[r-1, 1]*exp(-fished_pop_setup[r-1, 3]*step) # Divide by the time step here
+}
+
+starting_pop <- starting_pop %>% 
+  rename(N = "V1")
+
+## These fish form our starting population for the model
+## At the end of the year the spawning stock biomass of all females will be calculated to generate recruitment for the next year
+## Alpha and Beta need to be recorded for use in the next step of the model
+
+
+
+## Selectivity-retention for the fish in the model ----------------------------
+
+# Retention for each age group
+# This is for when you actually run the model you don't use this for setting up the initial population
+# Trying to account for the fact that fish that are below the legal size limit are likely to be thrown back and so won't necessarily die
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(
+    retention_pre1913 = 1,
+    retention1913 = ifelse(length <= 279, 0, ifelse(length > 279 & length < 279+5, 0.5, ifelse(length >= 279+5, 0.95, 0))),
+    retention1977 = ifelse(length <= 380, 0, ifelse(length > 380 & length < 380+5, 0.5, ifelse(length >= 380+5, 0.95, 0))),
+    retention1988 = ifelse(length <= 410, 0, ifelse(length > 410 & length < 410+5, 0.5, ifelse(length >= 410+5, 0.95, 0))),
+    retention2008 = ifelse(length <= 450, 0, ifelse(length > 450 & length < 450+5, 0.5, ifelse(length >= 450+5, 0.95, 0))),
+    retention2009 = ifelse(length <= 500, 0, ifelse(length > 500 & length < 500+5, 0.5, ifelse(length >= 500+5, 0.95, 0)))
+    ) # account for minimum legal length changes
+
+## Landings and discards
+# This gives us the proportion of fish that are kept and the proportion that are thrown back
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(landings_pre1913 = selectivity * retention_pre1913,
+         discards_pre1913 = selectivity*(1 - landings_pre1913)) %>% 
+  
+  mutate(landings_1913_1977 = selectivity * retention1913,
+         discards_1913_1977 = selectivity*(1 - landings_1913_1977)) %>% 
+  
+  mutate(landings_1977_1988 = selectivity * retention1977,
+         discards_1977_1988 = selectivity*(1 - landings_1977_1988)) %>% 
+  
+  mutate(landings_1988_2008 = selectivity * retention1988,
+         discards_1988_2008 = selectivity*(1 - landings_1988_2008)) %>% 
+  
+  mutate(landings_2008_2009 = selectivity * retention2008,
+         discards_2008_2009 = selectivity*(1 - landings_2008_2009)) %>%
+  
+  mutate(landings_post2009 = selectivity * retention2009,
+         discards_post2009 = selectivity*(1 - landings_post2009))
+  
+
+## Selectivity-Retention Values Including post-release mortality
+fished_pop_setup <- fished_pop_setup %>% 
+  mutate(sel_ret_pre1913 = landings_pre1913 + (PRM * discards_pre1913),
+         sel_ret_1913_1977 = landings_1913_1977 + (PRM * discards_1913_1977),
+         sel_ret_1977_1988 = landings_1977_1988 + (PRM * discards_1977_1988),
+         sel_ret_1988_2008 = landings_1988_2008 + (PRM * discards_1988_2008),
+         sel_ret_2008_2009 = landings_2008_2009 + (PRM * discards_2008_2009),
+         sel_ret_post2009 = landings_post2009 + (PRM * discards_post2009)
+         )
+
+sel_ret_pre1913 <- fished_pop_setup$sel_ret_pre1913
+sel_ret_pre1913 <- array(sel_ret_pre1913, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_pre1913 <- t(sel_ret_pre1913)
+
+sel_ret_1913_1977 <- fished_pop_setup$sel_ret_1913_1977
+sel_ret_1913_1977 <- array(sel_ret_1913_1977, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_1913_1977 <- t(sel_ret_1913_1977)
+
+sel_ret_1977_1988 <- fished_pop_setup$sel_ret_1977_1988
+sel_ret_1977_1988 <- array(sel_ret_1977_1988, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_1977_1988 <- t(sel_ret_1977_1988)
+
+sel_ret_1988_2008 <- fished_pop_setup$sel_ret_1988_2008
+sel_ret_1988_2008 <- array(sel_ret_1988_2008, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_1988_2008 <- t(sel_ret_1988_2008)
+
+sel_ret_2008_2009 <- fished_pop_setup$sel_ret_2008_2009
+sel_ret_2008_2009 <- array(sel_ret_2008_2009, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_2008_2009 <- t(sel_ret_2008_2009)
+
+sel_ret_post2009 <- fished_pop_setup$sel_ret_post2009
+sel_ret_post2009 <- array(sel_ret_post2009, dim = c(12 , max_age)) # 12 months, 30 years old max
+sel_ret_post2009 <- t(sel_ret_post2009)
+# i interpret sel_ret as: how likely a fish is to be caught + kept from recruitment (1, 1) to the last month of its first year (1, 12) to the last month of its 30th year (30, 12)
+
+# Then create a matrix of selectivity-retention, one slice per year.
+sel_ret <- NULL
+
+mll_change_1988_year <- 1988 - 1945
+mll_change_2008_year <- 2008 - 1945
+mll_change_2009_year <- 2009 - 1945
+max_year <- 2024 - 1945
+
+for(i in 1:(mll_change_1988_year-1)){
+  sel_ret <- abind(sel_ret, sel_ret_1977_1988, along = 3)
+}
+
+for(i in mll_change_1988_year:(mll_change_2008_year-1)){
+  sel_ret <- abind(sel_ret, sel_ret_1988_2008, along = 3)
+}
+
+for(i in mll_change_2008_year:(mll_change_2009_year-1)){
+  sel_ret <- abind(sel_ret, sel_ret_2008_2009, along = 3)
+}
+
+for(i in mll_change_2009_year:max_year){
+  sel_ret <- abind(sel_ret, sel_ret_post2009, along = 3)
+}
+
+head(sel_ret)
+
+
+## Saving files ---------------------------------------------------------------
+
+# initial population
+saveRDS(starting_pop, file = paste0("data/output_data/05_starting_population.rds"))
+
+# selectivity
+selectivity <- fished_pop_setup$selectivity
+saveRDS(selectivity, file = "data/output_data/05_selectivity.rds")
+saveRDS(sel_ret, file = "data/output_data/05_selectivity_retention.rds")
+
+# maturity
+maturity <- fished_pop_setup$fished_mat 
+maturity <- array(maturity, dim = c(12, max_age))
+maturity <- t(maturity)
+saveRDS(maturity, file = "data/output_data/05_maturity.rds")
+
+# weight of each age group
+weight <- life_hist$weight
+weight <- array(weight, dim = c(12, max_age))
+weight <- t(weight)
+saveRDS(weight, file="data/output_data/05_weight.rds")
+
+
+### END ###
