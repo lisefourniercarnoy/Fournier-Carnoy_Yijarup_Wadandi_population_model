@@ -28,13 +28,24 @@ bbox <- st_bbox(c(xmin = 114.4, xmax = 116.0, ymin = -35.3, ymax = -32.5), crs =
 
 ## Files used in this script --------------------------------------------------
 
-file_NTZ    <- "data/output_data/01_wadandi_NTZ.shp"
-file_water  <- "data/output_data/01_water.rds"
+file_NTZ    <- "data/output_data/01_B_wadandi_NTZ.shp"
+file_water  <- "data/output_data/01_B_water.rds"
 
 ## Load files -----------------------------------------------------------------
 
 NTZ <-  st_read(file_NTZ) %>%
   st_transform(common_crs) %>%
+  mutate(
+    restriction_date = case_when(name == "Rottnest"           ~ "01/07/2007", # add when exactly each NTZ was put in place
+                                 name == "Shoalwater Islands" ~ "01/01/2007",
+                                 name == "Marmion"            ~ "30/01/1992",
+                                 name == "Two Rocks"          ~ "01/07/2018",
+                                 name == "Ngari Capes"        ~ "10/04/2019",
+                                 name == "Geographe"          ~ "01/07/2018",
+                                 name == "South-west Corner"  ~ "01/07/2018",
+                                 .default = NULL # others aren't in the final grid
+                                 )
+  ) %>% 
   st_make_valid()
 plot(NTZ)
 
@@ -65,15 +76,16 @@ plot(Fished_area$geometry)
 
 # Put this back together with the fished area to create "water" again
 df_Fished_area <- st_sf(Fished_area) %>%
-  mutate(status = "Fished")
-plot(NTZarea)
+  mutate(status = "Fished",
+         restriction_date = NA)
+plot(df_Fished_area)
 
 df_NTZ_union <- st_sf(NTZarea) %>%
   mutate(status = ifelse(zone_type == "Special Purpose Zone (Shore-based Activities) (IUCN VI)", # for cells in this shore-activities only zones...
                          "NTZ_for_boat_only", "NTZ_for_shore_and_boat")) %>% # ... boat fishing is not allowed
   dplyr::select(names(df_Fished_area))
 
-names(df_Fished_area) == names(df_NTZ_union)
+names(df_Fished_area); names(df_NTZ_union)
 
 water <- rbind(df_NTZ_union, df_Fished_area)
 plot(water$geometry)
@@ -86,7 +98,7 @@ ggplot(water) +
   scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6]))
 
 # give a new cell ID to all cells, because a few were cut in two in the process
-water$ID <- row_number(water)
+water$ID <- 1:nrow(water)
 
 
 ## find cockburn sound --------------------------------------------------------
@@ -109,10 +121,10 @@ pts <- st_as_sf(
 )
 cs <- st_convex_hull(st_union(pts))
 cs_proj <- st_transform(cs, st_crs(water))
-plot(water$geometry)
-plot(cs_proj, col = NA, border = "red", lwd = 2, add = TRUE)
+plot(water$geometry); plot(cs_proj, col = NA, border = "red", lwd = 2, add = TRUE)
 
 # find the cell centroid that are inside the cockburn polygon
+plot(st_centroid(water))
 inside <- st_within(st_centroid(water), cs_proj)
 cs_cell_id <- which(lengths(inside) > 0)
 
@@ -124,7 +136,7 @@ plot(cockburn_cells)
 cs_cell_id <- cockburn_cells$ID # find the cell IDs
 
 
-ggplot() + # plot check before adding cockburn type
+ggplot() + # plot check BEFORE adding cockburn type
   geom_sf(data = water, aes(fill = type), col = NA) +
   scale_fill_manual(values = colour_palette) +
   theme_minimal()
@@ -135,11 +147,11 @@ water$type <- case_when(
   water$ID %in% cs_cell_id ~ "north_cockburn_warnbro",
   .default = water$type
   )
-ggplot() + # plot check after adding cockburn type
+
+ggplot() + # plot check AFTER adding cockburn type
   geom_sf(data = water, aes(fill = type), col = NA) +
   scale_fill_manual(values = colour_palette) +
   theme_minimal()
-
 
 # Calculating grid cell area and removing cells < 1m2
 water <- water %>%
@@ -152,22 +164,28 @@ water <- st_make_valid(water) %>%
 
 # identify important cells
 
-# NTZ cells (not exactly sure why make it into a list given that there's only 1 list object in it...)
-no_take_list <- list()
-no_take_list[[1]] <- water %>%
+# NTZ cells
+no_take_list_boat_shore <- water %>%
   filter(status == "NTZ_for_boat_only" | status == "NTZ_for_shore_and_boat") %>%
   st_drop_geometry() %>%
   pull(ID) %>%
   as.numeric()
 
+no_take_list_shore <- water %>%
+  filter(status == "NTZ_for_shore_and_boat") %>%
+  st_drop_geometry() %>%
+  pull(ID) %>%
+  as.numeric()
+
+
 # cockburn sound + warnbro sound cells
-cs_list <- list()
-cs_list[[1]] <- water$ID[water$type %in% c("north_cockburn_warnbro", "shore_north_cockburn_warnbro")]
+cs_list <- water$ID[water$type %in% c("north_cockburn_warnbro", "shore_north_cockburn_warnbro")]
  
 
 ## Save files for next step ---------------------------------------------------
 
-saveRDS(no_take_list, file = "data/output_data/02_no_take_list.rds")
+saveRDS(no_take_list_boat_shore, file = "data/output_data/02_no_take_list_boat_shore.rds")
+saveRDS(no_take_list_shore, file = "data/output_data/02_no_take_list_shore.rds")
 saveRDS(cs_cell_id, "data/output_data/01_cockburn_cell_id.rds")
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
 
