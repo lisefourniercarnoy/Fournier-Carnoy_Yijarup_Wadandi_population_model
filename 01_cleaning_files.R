@@ -326,6 +326,6 @@ water_sf <- st_as_sf(water_vect) %>%
 
 plot(water_sf)
 
-saveRDS(water_sf, "data/output_data/01_water.rds")
+saveRDS(water_sf, "data/output_data/01_B_water.rds")
 
 ## END ##
