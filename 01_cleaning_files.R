@@ -30,7 +30,7 @@ library(RColorBrewer) # for colours on plots
 
 file_land         <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 file_MPA          <- "data/input_data/western-australia_marine-parks-all.shp"
-file_MPA_fixed    <- "data/output_data/01_Q_wadandi_NTZ_manual_clean.shp"
+file_MPA_fixed    <- "data/output_data/Q_wadandi_NTZ_manual_clean.shp"
 file_habitats     <- "data/input_data/wadandi_predicted_habitat.RDS" # Claude's SWC habitat predictions
 file_shore_hab    <- "data/output_data/01_Q_manual_shoreline_habitat.shp" # manually categorised shore habitat
 file_bathy        <- "data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
