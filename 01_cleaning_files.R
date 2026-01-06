@@ -28,14 +28,12 @@ library(RColorBrewer) # for colours on plots
 
 ## Files used in this script --------------------------------------------------
 
-file_land         <- "data/input_data/aus_land_low_res.shp"
-#file_land         <- "data/input_data/aus_land_high_res_no_freshwater.shp"
-#file_land         <- "data/input_data/aus_land_high_res.shp" # for plotting only
-file_MPA          <- "data/input_data/Collaborative_Australian_Protected_Area_Database_(CAPAD)_2024_-_Marine_SW_selection.shp"
+file_land         <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 file_MPA          <- "data/input_data/western-australia_marine-parks-all.shp"
+file_MPA_fixed    <- "data/output_data/01_Q_wadandi_NTZ_manual_clean.shp"
 file_habitats     <- "data/input_data/wadandi_predicted_habitat.RDS" # Claude's SWC habitat predictions
-file_shore_hab    <- "data/input_data/wadandi_shore_hab_categorised.shp" # manually categorised shore habitat
-
+file_shore_hab    <- "data/output_data/01_Q_manual_shoreline_habitat.shp" # manually categorised shore habitat
+file_bathy        <- "data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
 
 ## Set the extent -------------------------------------------------------------
 
@@ -58,13 +56,12 @@ bbox_whole <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -31), 
 wa_map <- st_read(file_land) %>% # takes up to 30 sec. because very detailed file
   st_transform(common_crs) %>% 
   st_make_valid() %>% # fix broken geometries
-  st_crop(bbox_whole) # crop to Wadandi
-
-wa_map <- st_simplify(wa_map, dTolerance = 100)  # Adjust dTolerance for balance between speed and precision
+  st_crop(bbox_whole) # crop to site
 
 plot(wa_map$geometry, col = "#eeeeeeff") # Map of WA, cropped to Wadandi Country
-wa_map <- wa_map |> dplyr::select(-Shape_Area) # remove Shape_Area which is too large to fit in the shapefile column
-st_write(wa_map, "data/output_data/01_wadandi_land.shp", append = F)
+
+wa_map <- wa_map[!st_is_empty(wa_map),]
+st_write(wa_map, "data/output_data/01_B_wadandi_land.shp", append = F)
 
 
 ## Map of the State + Commonwealth Marine Park --------------------------------
@@ -76,36 +73,41 @@ MP <- st_read(file_MPA) %>%
   filter(zone %in% c("Sanctuary Zone", 
                      "National Park Zone", 
                      "Special Purpose Zone"
-  )
-  )
+                     )
+         )
 MP <- MP %>% filter(zone_type != c("Special Purpose Zone (Mining Exclusion) (IUCN VI)"))
 plot(MP$geometry)
 
 NTZ <- MP %>%
   #dplyr::select(GIS_AREA, GAZ_DATE, LATEST_GAZ, COMMENTS, ZONE_TYPE) %>% 
   st_crop(bbox_whole)
-plot(NTZ)
+plot(NTZ$geometry)
 
 # Save the No-Take Zones layer
 plot(NTZ$geometry, col = colour_palette[4]); plot(wa_map$geometry, col = "#eeeeeeff", add = T)
-st_write(NTZ, "data/output_data/01_wadandi_NTZ.shp", delete_layer = T)
+st_write(NTZ, "data/output_data/01_B_wadandi_NTZ.shp", delete_layer = T)
+
+
+# after manual fix (in QGIS, with 'Vector Overlay > Difference' with the 01_X_wadandi_NTZ_manually_modified_to_reach_land.shp)
+NTZ_clean <- st_read(file_MPA_fixed); plot(NTZ_clean$geometry)
 
 
 ### Habitat Files - RUN AGAIN IF THINGS CHANGE --------------------------------
 
-sand <- rast("data/external_data/sw-network_predicted-habitat_psand.tif")
-reef <- rast("data/external_data/sw-network_predicted-habitat_pinverts.tif") +
-  rast("data/external_data/sw-network_predicted-habitat_pmacro.tif") + 
-  rast("data/external_data/sw-network_predicted-habitat_prock.tif")
-seagrass <- rast("data/external_data/sw-network_predicted-habitat_pseagrass.tif")
+sand <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["psand.fit"]]
+reef <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["preef.fit"]]
+seagrass <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["pseagrass.fit"]]
 
-hab <- c(sand, reef, seagrass); names(hab) <- c("sand", "reef", "seagrass")
+hab <- c(reef, sand, seagrass)
+hab <- project(hab, crs(wa_map))
+hab <- mask(hab, wa_map, inverse = TRUE); names(hab) <- c("reef", "sand", "seagrass")
+plot(hab)
 
 #  Crop the raster
 bbox_sf <- st_transform(bbox_whole, crs(hab))
 bbox_vect <- vect(bbox_sf)
 cropped_ras <- crop(hab, bbox_vect)
-plot(cropped_ras)
+plot(cropped_ras, range = c(0, 1))
 
 # make a polygon to use to make grids
 hab_polygon <- st_as_sf(as.polygons(app(cropped_ras[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
@@ -130,7 +132,7 @@ hab_polygon <- st_as_sf(as.polygons(app(cropped_ras[[1]], fun = function(x) ifel
 # shore_hab <- st_difference(bbox_whole, combined)
 # plot(shore_hab, col = "red", main = "Area outside both polygons")
 # 
-# st_write(shore_hab, "data/output_data/01_wadandi_shore_habitat_to_categorise.shp", delete_layer = T)
+# st_write(shore_hab, "data/output_data/01_B_wadandi_shore_habitat_to_categorise.shp", delete_layer = T)
 
 shore_hab <- st_read(file_shore_hab)
 plot(shore_hab)
@@ -140,19 +142,19 @@ plot(shore_hab)
 # merge Claude's predicted habitat to the shore habitat
 
 # sand
-sand_shore <- rasterize(shore_hab[shore_hab$habitat == "sand",], hab, field =  global(hab[["sand"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
+sand_shore <- rasterize(shore_hab[shore_hab$habitat == "sand",], hab, field = global(hab[["sand"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
 sand_layer <- hab[["sand"]]
 sand_combined <- cover(sand_layer, sand_shore)
 plot(sand_combined)
 
 # reef
-reef_shore <- rasterize(shore_hab[shore_hab$habitat == "reef",], hab, field =  global(hab[["reef"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
+reef_shore <- rasterize(shore_hab[shore_hab$habitat == "reef",], hab, field = global(hab[["reef"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
 reef_layer <- hab[["reef"]]
 reef_combined <- cover(reef_layer, reef_shore)
 plot(reef_combined)
 
 # seagrass (use the shore hab of sand and replace with zero, since we have no seagrass on the shore)
-seagrass_shore <- rasterize(shore_hab[shore_hab$habitat == "sand",], hab, field =  global(hab[["sand"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
+seagrass_shore <- rasterize(shore_hab[shore_hab$habitat == "sand",], hab, field = global(hab[["sand"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
 plot(seagrass_shore)
 seagrass_shore[[1]][!is.na(seagrass_shore[[1]]), ] <- 0
 seagrass_layer <- hab[["seagrass"]]
@@ -163,64 +165,129 @@ plot(seagrass_combined)
 sand_mask <- !is.na(sand_shore); plot(sand_mask)
 reef_combined_clean <- mask(reef_combined, sand_mask, maskvalues = TRUE, updatevalue = 0); plot(reef_combined_clean)
 
-rocky_mask <- !is.na(rocky_shore); plot(rocky_mask)
-sand_combined_clean <- mask(sand_combined, rocky_mask, maskvalues = TRUE, updatevalue = 0); plot(sand_combined_clean)
-
 # combine into one
-hab_raster <- c(sand_combined_clean, reef_combined_clean, seagrass_combined)
-hab_raster <- crop(hab_raster, st_transform(bbox_whole, 4326)); plot(hab_raster)
-
+hab_raster <- c(sand_combined, reef_combined_clean, seagrass_combined)
+hab_raster <- crop(hab_raster, st_transform(bbox_whole, crs(hab_raster))); plot(hab_raster)
 
 
 ## Make grid cells ------------------------------------------------------------
 
 # make a polygon to use to make grids
-hab_polygon <- st_as_sf(as.polygons(app(hab_raster[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
-  st_transform(common_crs); plot(hab_polygon, col = NA, border = "red", lwd = 2)
+# hab_polygon <- st_as_sf(as.polygons(app(hab_raster[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
+#   st_transform(common_crs); plot(hab_polygon, col = NA, border = "red", lwd = 2)
 
-# create a 500m buffer around land
-distance <- 500 # Buffer distance in meters (adjust as needed)
+bathy <- rast("data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif") %>% crop(st_transform(bbox_whole, 4326)); plot(bathy)
+bathy <- ifel(bathy$AusBathyTopo__Australia__2024_250m_MSL_cog < -200, NA, bathy$AusBathyTopo__Australia__2024_250m_MSL_cog); plot(bathy)
+temp <- st_as_sf(as.polygons(app(bathy[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
+  st_transform(common_crs); plot(temp, col = NA, border = "red", lwd = 2)
 
-land_buffer <- st_buffer(wa_map, dist = distance, nQuadSegs = 100) %>%
-  st_make_valid() %>%
-  st_transform(common_crs)
-plot(land_buffer$geometry)
+water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col = NA, border = "red", lwd = 2)
+water_offshore_polygon <- st_difference(water_polygon, st_union(buf)); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
-buf <- st_difference(land_buffer, wa_map) %>% 
-  st_make_valid() %>% 
-  st_crop(bbox_whole)
+### 1. Shore cells ------------------------------------------------------------
+
+# create a 500m buffer around land (takes a while, so use the already-made one)
+# distance <- 100 # Buffer distance in meters
+# land_buffer <- st_buffer(st_transform(wa_map, common_crs), dist = distance, nQuadSegs = 100) %>%
+#   st_make_valid()
+# plot(land_buffer$geometry)
+# 
+# buf <- st_difference(land_buffer, st_transform(wa_map, common_crs)) %>% # takes a long while because the coastline is detailed.
+#   st_make_valid() %>%
+#   st_crop(bbox_whole)
+# buf2 <- st_union(buf)
+# 
+# buf_poly <- st_cast(buf, "MULTIPOLYGON", warn = FALSE)
+# 
+# st_write(
+#   buf_poly,
+#   "data/output_data/01_B_buffer_empty.shp",
+#   delete_layer = TRUE
+# )
+
+buf <- st_read("data/output_data/Q_buffer_empty_mainland.shp") # file saved just above, manually modified in QGIS to keep the mainland buffer (no islands)
 plot(buf$geometry)
 
 
-## 1. grid over wadandi ------------------------------------------------------- 
-
-# make a large grid over habitat
-big_grd <- st_make_grid(bbox_wadandi, cellsize = 4500, square = T); plot(big_grd) # 4500m x 4500m square, or 20.25km2
-
-big_grd <- st_intersection(big_grd, hab_polygon) %>% # crop the grid to the extent of the habitat raster
-  st_make_valid() %>%
-  st_transform(common_crs); plot(big_grd)
-
-big_grd <- st_as_sf(big_grd)
-big_grd <- st_difference(big_grd, buf) %>% dplyr::select(x); plot(big_grd)
-big_grd <- st_difference(big_grd, wa_map) %>% dplyr::select(x); plot(big_grd)
-
-big_grd$type <- "pelagic"
-
-# make a small grid inside that buffer
-small_grd <- st_make_grid(bbox_wadandi, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
+## over north area
+small_grd_north <- st_make_grid(bbox_north, cellsize = 4000, square = T) %>% # 2000m x 2000m square, or 4km2
   st_as_sf() %>% 
-  st_transform(common_crs); plot(small_grd)
+  st_transform(common_crs); plot(small_grd_north)
 
-small_grd <- st_intersection(small_grd, buf) %>% 
+small_grd_north <- st_intersection(small_grd_north, buf) %>% 
   st_make_valid() %>%
   st_transform(common_crs) %>% 
   dplyr::select(x)
-plot(small_grd)
-small_grd$type <- "shore"
+plot(small_grd_north)
+small_grd_north$type <- "shore_north"
+
+
+## over wadandi area
+small_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
+  st_as_sf() %>% 
+  st_transform(common_crs); plot(small_grd_wadandi)
+
+small_grd_wadandi <- st_intersection(small_grd_wadandi, buf) %>% 
+  st_make_valid() %>%
+  st_transform(common_crs) %>% 
+  dplyr::select(x)
+plot(small_grd_wadandi)
+small_grd_wadandi$type <- "shore_wadandi"
+
+
+### 2. Offshore cells ---------------------------------------------------------
+
+# large cells over north offshore and wadandi cells >100m depth
+
+## over north cells
+hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
+plot(hab_north)
+
+big_grd_north <- st_make_grid(bbox_north, cellsize = 10000, square = T); plot(big_grd_north) # 10000m x 10000m square, or 100km2
+
+big_grd_north <- st_intersection(big_grd_north, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
+  st_make_valid() %>%
+  st_transform(common_crs); plot(big_grd_north)
+
+big_grd_north <- st_as_sf(big_grd_north)
+big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
+#big_grd_north <- st_difference(big_grd_north, wa_map) %>% dplyr::select(x); plot(big_grd_north)
+
+big_grd_north$type <- "offshore_north"
+
+
+## over wadandi cells
+hab_wadandi <- crop(hab, st_transform(bbox_wadandi, crs(hab)))
+plot(hab_wadandi)
+
+big_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 4000, square = T); plot(big_grd_wadandi) # 4000m x 4000m square, or 16km2
+
+big_grd_wadandi <- st_intersection(big_grd_wadandi, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
+  st_make_valid() %>%
+  st_transform(common_crs); plot(big_grd_wadandi)
+
+big_grd_wadandi <- st_as_sf(big_grd_wadandi)
+big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plot(big_grd_wadandi)
+
+big_grd_wadandi$type <- "offshore_wadandi"
+
+
+
+
+### 3. Merge all grids together -----------------------------------------------
+
 
 # merge the big and small grids together
-full_grd <- rbind(big_grd, small_grd) %>% st_transform(common_crs) %>% st_crop(bbox_wadandi); plot(full_grd)
+shore_grd <- rbind(small_grd_north, small_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(shore_grd)
+offshore_grd <- rbind(big_grd_north, big_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(offshore_grd)
+
+full_grd <- rbind(shore_grd, offshore_grd) %>% st_transform(common_crs) %>% st_crop(bbox_whole) %>% st_make_valid(); plot(full_grd)
+
+# check in qgis to make sure things are where you want em.
+# full_grd <- st_collection_extract(full_grd, "POLYGON")
+# full_grd <- st_cast(full_grd, "POLYGON")
+# st_write(full_grd, "data/output_data/01_B_test_grid.shp", append = F)
+
 
 # transform into a vector for use later
 full_grd <- full_grd[st_geometry_type(full_grd) %in% c("POLYGON", "MULTIPOLYGON"), ] %>%  # remove problematic geometries
@@ -237,72 +304,24 @@ water_ll <- st_transform(water_sf, 4326)   # transform to lat and long just to c
 coords <- st_coordinates(st_centroid(water_ll))
 water <- water_ll[c(
   coords[, "X"] <= 115.543734 |
-  coords[, "Y"] >= -34.413498), 
+    coords[, "Y"] >= -34.413498), 
 ]
-grd_wadandi <- st_transform(water, common_crs)
-plot(grd_wadandi)
+grd_final <- st_transform(water, common_crs)
+plot(grd_final)
 
 # Check the grid
-ggplot(data = grd_wadandi) +
+ggplot(data = grd_final) +
   geom_sf(color = colour_palette[2]) +
   theme_minimal()
 
-
-## 2. make a grid over north cells --------------------------------------------
-
-# make a polygon to use to make grids
-hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
-plot(hab_north)
-
-big_grd_north <- st_make_grid(bbox_north, cellsize = 10000, square = T); plot(big_grd_north) # 10000m x 10000m square, or 100km2
-
-big_grd_north <- st_intersection(big_grd_north, hab_polygon) %>% # crop the grid to the extent of the habitat raster
-  st_make_valid() %>%
-  st_transform(common_crs); plot(big_grd_north)
-
-big_grd_north <- st_as_sf(big_grd_north)
-big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
-big_grd_north <- st_difference(big_grd_north, wa_map) %>% dplyr::select(x); plot(big_grd_north)
-
-big_grd_north$type <- "north"
-
-# make a small grid inside that buffer
-small_grd_north <- st_make_grid(bbox_north, cellsize = 4000, square = T) %>% # 4000m x 4000m square, or 16km2
-  st_as_sf() %>% 
-  st_transform(common_crs); plot(small_grd_north)
-
-small_grd_north <- st_intersection(small_grd_north, buf) %>% 
-  st_make_valid() %>%
-  st_transform(common_crs) %>% 
-  dplyr::select(x)
-plot(small_grd_north)
-small_grd_north$type <- "shore_north"
-
-# merge the big and small grids together
-grd_north <- rbind(big_grd_north, small_grd_north) %>% st_crop(bbox_north) %>% st_transform(common_crs); plot(grd_north)
-
-
-## 3. put north and wadandi together ------------------------------------------
-ggplot() +
-  geom_sf(data = grd_north) +
-  geom_sf(data = grd_wadandi) +
-  geom_sf(data = wa_map)
-
-# clean up the grid object type otherwise it's a mess
-grd_all <- rbind(st_sf(grd_north) %>% rename("geometry" = x), st_sf(grd_wadandi)) %>% st_make_valid(); plot(grd_all)
-grd_all_polygons <- grd_all[st_geometry_type(grd_all) %in% c("POLYGON", "MULTIPOLYGON"),]
-grd_all <- st_cast(grd_all_polygons, "POLYGON"); plot(grd_all)
-
-
 # 4. Extract habitat values to the grid cells
-mean_values <- extract(hab_raster, st_transform(grd_all, crs(hab_raster)), fun = mean, na.rm = TRUE); head(mean_values)
+mean_values <- extract(hab_raster, st_transform(grd_final, crs(hab_raster)), fun = mean, na.rm = TRUE); head(mean_values)
 summary(is.na(mean_values)) # check there are no NAs
 
-water_vect <- vect(grd_all) %>% project("EPSG:4326"); plot(water_vect)
+water_vect <- vect(grd_final) %>% project("EPSG:4326"); plot(water_vect)
 water_vect <- cbind(water_vect, mean_values)
 water_sf <- st_as_sf(water_vect) %>% 
   st_make_valid() %>% 
-  #st_cast("POLYGON") %>% 
   st_transform(common_crs)
 
 plot(water_sf)
