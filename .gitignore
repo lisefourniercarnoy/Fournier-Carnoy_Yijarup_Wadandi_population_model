@@ -11,3 +11,4 @@ qgis_projects/
 
 # and simulations, which at this point are dummy simulations we don't need to keep track of
 simulations/
+.Rproj.user
