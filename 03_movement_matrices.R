@@ -30,7 +30,6 @@ file_water <- "data/output_data/02_watergrid.rds"
 ## Centroid Function ----------------------------------------------------------
 
 # This returns the centre of the polygon, but if it's on land it will create a new centroid
-
 st_centroid_within_poly <- function (poly) { # This returns the centre of the ploygon, but if it's on land it will create a new centroid
   
   # check if centroid is in polygon
@@ -171,7 +170,7 @@ water[habitat_cols] <- as.data.frame(st_drop_geometry(water[habitat_cols])) / ro
 
 summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
 plot(water)
-
+water[,is.na(water$seagrass)]
 
 ## Save files to use in the next step -----------------------------------------
 
@@ -250,6 +249,7 @@ a = -(1 / swim_speed_adult)
 b =  0.150      # Attractiveness of reef habitat
 c =  0.010      # Attractiveness of seagrass habitat
 d =  0.005      # Attractiveness of sand habitat
+e =  0.2        # attractiveness of cockburn sound cells
 
 # From the attractivity of each habitat type, and the cell's distance to other cells, each cell's attractiveness is calculated (based on the % of each habitat in that cell)
 adult_hab_attractivity <- (a * pDist) + (b * reef) + (c * seagrass) + (d * sand)
@@ -330,10 +330,6 @@ do.call(grid.arrange, c(plot_list, ncol = 2, nrow = 3))
 # we want the recruits to be in seagrass, and then move out from there 
 cockburn_list <- water$ID[water$type == "shore_north_cockburn_warnbro" | 
                             water$type =="north_cockburn_warnbro"]
-# check that water type is correct
-ggplot() +
-  geom_sf(data = water, aes(fill = dispersal$ID))
-
 
 dispersal <- as.data.frame(seagrass) %>%
   rename(perc_habitat = seagrass) %>%
@@ -350,6 +346,11 @@ dispersal <- dispersal %>%
          perc_habitat = perc_habitat * 0.5) %>% 
   glimpse()
 
+# check that water type is correct
+ggplot() +
+  geom_sf(data = water, aes(fill = dispersal$cockburn))
+
+
 recruitment <- array(0, dim = c(nrow(dispersal), 2))
 recruitment[ ,2] <- as.numeric(dispersal$ID) 
 
@@ -357,7 +358,7 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(dispersal)))
 cell_utility[,2] <- as.numeric(dispersal$ID) 
 
 for(cell in 1:nrow(recruitment)){
-  U <- exp(dispersal[cell, 1]) + exp(dispersal[cell, 3]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a cockburn sound cell.
+  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25*exp(dispersal[cell, "cockburn"]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a cockburn sound cell.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes Cockburn sound cells and seagrass cells exponentially more attractive.
 
@@ -373,7 +374,6 @@ water_recruitment <- water %>%
               rename(recruitment_prob = V1,
                      ID = V2), by = "ID")
 
-
 ggplot() +
   geom_sf(data = water_recruitment, aes(fill = recruitment_prob), color = NA, lwd = 0) +
   scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
@@ -388,7 +388,7 @@ recruitment <- as.vector(recruitment[,1])
 
 ## Recruit movement -----------------------------------------------------------
 
-# Want the recruits to stay in the lagoon until they mature and move to the reef
+# Want the recruits to stay in seagrass until they mature and move to the reef
 
 swim_speed_juv <- 5
 
