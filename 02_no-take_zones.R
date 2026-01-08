@@ -44,15 +44,59 @@ NTZ <-  st_read(file_NTZ) %>%
                                  name == "Geographe"          ~ "01/07/2018",
                                  name == "South-west Corner"  ~ "01/07/2018",
                                  .default = NULL # others aren't in the final grid
-                                 )
+                                 ),
+    restriction_date = as.list(restriction_date)
   ) %>% 
   st_make_valid()
-plot(NTZ)
+plot(NTZ$geometry)
 
 water <- readRDS(file_water) %>%
   st_transform(common_crs) %>%
   st_make_valid()
 plot(water)
+
+## make the cockburn sound pink snapper closure -------------------------------
+
+test <- matrix(c(
+  115.749655, -32.073611, # NE point
+  115.608333, -32.073611, # NW point
+  115.652778, -32.380851, # SW point
+  115.724430, -32.380851, # becher point
+  115.849846, -32.313575, # close polygon back to freo
+  115.841356, -32.167078  # close polygon back to freo
+), 
+ncol = 2, byrow = TRUE,
+dimnames = list(NULL, c("lon", "lat")))
+
+pts <- st_as_sf(
+  data.frame(lon = test[,1], lat = test[,2]),
+  coords = c("lon", "lat"),
+  crs = 4326
+)
+cs_closure <- st_convex_hull(st_union(pts))
+cs_closure_proj <- st_as_sf(st_transform(cs_closure, st_crs(water)))
+
+sf::sf_use_s2(FALSE)
+cs_closure_proj <- st_intersection(cs_closure_proj, st_make_valid(st_union(water)))
+
+plot(cs_closure_proj, col = NA, border = "red", lwd = 2); plot(water$geometry, add = T)
+
+cs_closure_proj <- cs_closure_proj %>% 
+  mutate(
+    name = "Cockburn Sound temporal closure",
+    restriction_date = list(c(2000, 2005, 2023))
+  ) %>% 
+  rename(
+    geometry = x
+  )
+
+# 2000: 6 weeks from 15sep 31oct, source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
+# 2005: 4 months from 01oct 15dec source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
+# 2023: 01aug to 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
+
+# closure file
+NTZ <- bind_rows(cs_closure_proj, NTZ)
+plot(NTZ)
 
 
 ## Adjusting the grid to account for NTZ --------------------------------------
@@ -81,8 +125,10 @@ df_Fished_area <- st_sf(Fished_area) %>%
 plot(df_Fished_area)
 
 df_NTZ_union <- st_sf(NTZarea) %>%
-  mutate(status = ifelse(zone_type == "Special Purpose Zone (Shore-based Activities) (IUCN VI)", # for cells in this shore-activities only zones...
-                         "NTZ_for_boat_only", "NTZ_for_shore_and_boat")) %>% # ... boat fishing is not allowed
+  mutate(status = ifelse(zone_type == "Special Purpose Zone (Shore-based Activities) (IUCN VI)", # for cells in this shore-activities-only zones...
+                         "NTZ_for_boat_only", "NTZ_for_shore_and_boat"), # ... boat fishing is not allowed
+         status = ifelse(name == "Cockburn Sound temporal closure", 
+                         "temporal_closure", status)) %>%
   dplyr::select(names(df_Fished_area))
 
 names(df_Fished_area); names(df_NTZ_union)
@@ -95,7 +141,7 @@ plot(water$geometry)
 ggplot(water) +
   geom_sf(aes(fill = status)) +
   theme_void() +
-  scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6]))
+  scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
 
 # give a new cell ID to all cells, because a few were cut in two in the process
 water$ID <- 1:nrow(water)
