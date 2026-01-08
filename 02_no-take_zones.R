@@ -186,7 +186,7 @@ cs_list <- water$ID[water$type %in% c("north_cockburn_warnbro", "shore_north_coc
 
 saveRDS(no_take_list_boat_shore, file = "data/output_data/02_no_take_list_boat_shore.rds")
 saveRDS(no_take_list_shore, file = "data/output_data/02_no_take_list_shore.rds")
-saveRDS(cs_cell_id, "data/output_data/01_cockburn_cell_id.rds")
+saveRDS(cs_cell_id, "data/output_data/02_cockburn_cell_id.rds")
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
 
 ### END ###
