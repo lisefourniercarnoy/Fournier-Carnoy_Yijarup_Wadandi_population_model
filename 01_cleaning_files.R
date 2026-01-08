@@ -32,7 +32,7 @@ file_land         <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 file_MPA          <- "data/input_data/western-australia_marine-parks-all.shp"
 file_MPA_fixed    <- "data/output_data/Q_wadandi_NTZ_manual_clean.shp"
 file_habitats     <- "data/input_data/wadandi_predicted_habitat.RDS" # Claude's SWC habitat predictions
-file_shore_hab    <- "data/output_data/01_Q_manual_shoreline_habitat.shp" # manually categorised shore habitat
+file_shore_hab    <- "data/output_data/Q_manual_shoreline_habitat.shp" # manually categorised shore habitat
 file_bathy        <- "data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
 
 ## Set the extent -------------------------------------------------------------
@@ -181,8 +181,6 @@ bathy <- ifel(bathy$AusBathyTopo__Australia__2024_250m_MSL_cog < -200, NA, bathy
 temp <- st_as_sf(as.polygons(app(bathy[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
   st_transform(common_crs); plot(temp, col = NA, border = "red", lwd = 2)
 
-water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col = NA, border = "red", lwd = 2)
-water_offshore_polygon <- st_difference(water_polygon, st_union(buf)); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
 ### 1. Shore cells ------------------------------------------------------------
 
@@ -205,8 +203,12 @@ water_offshore_polygon <- st_difference(water_polygon, st_union(buf)); plot(wate
 #   delete_layer = TRUE
 # )
 
-buf <- st_read("data/output_data/Q_buffer_empty_mainland.shp") # file saved just above, manually modified in QGIS to keep the mainland buffer (no islands)
+buf <- st_read("data/output_data/Q_buffer_empty_mainland.shp") %>%  # file saved just above, manually modified in QGIS to keep the mainland buffer (no islands)
+  st_crop(bbox_whole)
 plot(buf$geometry)
+
+water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col = NA, border = "red", lwd = 2)
+water_offshore_polygon <- st_difference(water_polygon, st_union(buf)); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
 
 ## over north area
@@ -251,7 +253,6 @@ big_grd_north <- st_intersection(big_grd_north, water_offshore_polygon) %>% # cr
 
 big_grd_north <- st_as_sf(big_grd_north)
 big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
-#big_grd_north <- st_difference(big_grd_north, wa_map) %>% dplyr::select(x); plot(big_grd_north)
 
 big_grd_north$type <- "offshore_north"
 
@@ -270,8 +271,6 @@ big_grd_wadandi <- st_as_sf(big_grd_wadandi)
 big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plot(big_grd_wadandi)
 
 big_grd_wadandi$type <- "offshore_wadandi"
-
-
 
 
 ### 3. Merge all grids together -----------------------------------------------
@@ -314,9 +313,16 @@ ggplot(data = grd_final) +
   geom_sf(color = colour_palette[2]) +
   theme_minimal()
 
-# 4. Extract habitat values to the grid cells
+# save the grid and clean up in QGIS (removing shore cells that don't perfectly align with the large grids, at the north and south extremeties)
+st_write(grd_final, "data/output_data/01_B_grid_to_cleanup.shp", append = F)
+grd_final <- st_read("data/output_data/Q_grid_cleaned_up_01_B.shp")
+
+
+### 4. Extract habitat values to the grid cells -------------------------------
+
 mean_values <- extract(hab_raster, st_transform(grd_final, crs(hab_raster)), fun = mean, na.rm = TRUE); head(mean_values)
 summary(is.na(mean_values)) # check there are no NAs
+mean_values[is.na(mean_values)] <- 0 # if there are NAs, they are because one habitat is classified as 100% of the cell area. fill in with zeroes
 
 water_vect <- vect(grd_final) %>% project("EPSG:4326"); plot(water_vect)
 water_vect <- cbind(water_vect, mean_values)
@@ -329,3 +335,4 @@ plot(water_sf)
 saveRDS(water_sf, "data/output_data/01_B_water.rds")
 
 ## END ##
+
