@@ -41,12 +41,12 @@ source("custom_theme.R")
 
 ## 0. Files used in this script -----------------------------------------------
 
-file_wa         <- "data/output_data/01_wadandi_land.shp"
-file_bathy      <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
-file_boat_ramps <- "data/input_data/wadandi_boat_ramps.shp"
+file_wa           <- "data/output_data/01_wadandi_land.shp"
+file_bathy        <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
+file_boat_ramps   <- "data/input_data/wadandi_boat_ramps.shp"
 file_boat_ramps_n <- "data/input_data/north_boat_ramps.shp"
-file_water      <- "data/output_data/03_water.rds"
-file_network    <- "data/output_data/03_network_shapefile.shp"
+file_water        <- "data/output_data/03_water.rds"
+file_network      <- "data/output_data/03_network_shapefile.shp"
 
 year_start <- 1900
 year_end <- 2024
@@ -59,7 +59,7 @@ bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -33.2), crs 
 
 ## 1. Catchability ------------------------------------------------------------
 
-water <- readRDS(file_water) %>% filter(!is.na(ID)); plot(water)
+water <- readRDS(file_water) %>% filter(!is.na(ID))
 no_take_list <- list(water$ID[water$status %in% c('NTZ_boat_shore', 'NTZ_boat')]) # List of all the cells that are No-Take for boats
 
 # We'll calculate the catchability of each cell by its area and whether it's no-take or not.
@@ -67,13 +67,57 @@ water <- water %>%
   mutate(Area = as.vector((water$cell_area)/1000000))
 
 NCELL <- nrow(water)
-change_years <- c(year_start, 1992, 2007, 2018, 2019)
-water_area <- data.frame(
-  ID = water$ID,
-  restriction_date = water$restriction_date,
-  matrix(0, nrow = NCELL, ncol = (year_end-year_start+1),
-         dimnames = list(NULL, paste0("area_", year_start:(year_start+(year_end-year_start))))
-  )) # this creates a dataframe that's automatically as big as the number of restriction changes.
+change_years <- c(year_start, 1992, 2007, 2018, 2019) # spatial restrictions
+
+
+## test
+water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x year x months
+
+water_area[, 1:12, 1] <- water$cell_area # for all months of the first year, the catchable area is the cell's area.
+
+for (YEAR in 1:dim(water_area)[3]) {
+  for (MONTH in 1:dim(water_area)[2]) {
+    for (CELL in 1:dim(water_area)[1]) {
+      current_year <- year_start + YEAR - 1
+      restriction_date <- as.numeric(substr(water$restriction_date, 7, 10))[CELL]
+      
+      water_area[CELL, MONTH, YEAR] <- if (is.na(restriction_date)) {
+        water$cell_area[CELL]
+      } else if (current_year > restriction_date) {
+        0
+      } else {
+        water$cell_area[CELL]
+      }
+      
+      # ADD A CATCHABILITY REDUCTION FOR TEMPORAL CLOSURES ?
+
+      
+    }
+  }
+} # for every month and every year, the catchability of each cells is calculated based
+
+
+for (COL in (2):ncol(water_area)) { # for all years... (excluding the start year)
+  for (ROW in 1:NCELL) { # and every cell...
+    
+    year_col <- as.numeric(gsub("area_", "", names(water_area)[COL]))
+    res_date <- as.numeric(substr(water$restriction_date, 7, 10))[ROW]
+    
+    water_area[ROW, COL] <- if (is.na(res_date)) {
+      water$cell_area[ROW]
+    } else if (res_date <= year_col) {
+      0
+    } else {
+      water$cell_area[ROW]
+    }
+  }
+} # this loop automatically calculates the fishable area, relative to the user-entered restriction years.
+glimpse(water_area)
+
+
+
+## end test
+
 
 start_col <- paste0("area_", year_start)
 water_area[start_col] <- water$cell_area # put the unrestricted area in the first column

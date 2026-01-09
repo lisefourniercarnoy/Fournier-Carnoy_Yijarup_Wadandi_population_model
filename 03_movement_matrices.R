@@ -53,14 +53,14 @@ water <- readRDS(file_water) %>%
 ggplot(water) +
   geom_sf(aes(fill = status), colour = NA) +
   theme_void() +
-  scale_fill_manual(values=c(colour_palette[4], colour_palette[6], colour_palette[5]))
+  scale_fill_manual(values=c(colour_palette[4], colour_palette[6], colour_palette[5], colour_palette[1]))
 
 
 ## Calculate cell centroids and distance-to-neighbour-cells -------------------
 
 # Get centroids for the grid cells - CHARLOTTE HAS A LOT MORE COLUMNS TO HER CENTROIDS DATASET ???
 centroids <- st_centroid_within_poly(water)
-plot(centroids, cex=0.3) 
+plot(centroids[, !sapply(centroids, is.list)], cex=0.3) #plotting all but list-columns
 
 # Get the number of cells in the model, this will allow to to calculate distances and habitat cover differences.
 points <- as.data.frame(st_coordinates(centroids))%>%
@@ -169,8 +169,7 @@ summary(rowSums(st_drop_geometry(water[habitat_cols]))) # here each cell's habit
 water[habitat_cols] <- as.data.frame(st_drop_geometry(water[habitat_cols])) / rowSums(st_drop_geometry(water[habitat_cols]))
 
 summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
-plot(water)
-water[,is.na(water$seagrass)]
+plot(water[, !sapply(water, is.list)]) # plot all but list-columns
 
 ## Save files to use in the next step -----------------------------------------
 

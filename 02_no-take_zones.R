@@ -81,11 +81,20 @@ cs_closure_proj <- st_intersection(cs_closure_proj, st_make_valid(st_union(water
 
 plot(cs_closure_proj, col = NA, border = "red", lwd = 2); plot(water$geometry, add = T)
 
+# below is a list and description of temporal restrictions. i've made it this way because it's easier to see and modify in the code, in case there are more temporal closures or more complex ones.
+temporal_closures = list(
+#   YEAR,   MONTHS,           PERCENT OF EACH MONTH THAT IS FISHED
+  c("2000", "9-10",           "0.5-0"),
+  c("2005", "10-11-12",       "0-0-0.5"),
+  c("2023", "8-9-10-11-12-1", "0-0-0-0-0-0")
+)
+
 cs_closure_proj <- cs_closure_proj %>% 
   mutate(
     name = "Cockburn Sound temporal closure",
-    restriction_date_TC = list(c(2000, 2005, 2023)),
-    restriction_date_TC_months = list(c("9-10", "10-11-12", "8-9-10-11-12-1"))
+    restriction_date_TC = list(as.integer(vapply(temporal_closures, `[`, "", 1))),
+    restriction_date_TC_months = list(vapply(temporal_closures, `[`, "", 2)),
+    restriction_date_TC_months_perc_fished = list(vapply(temporal_closures, `[`, "", 3))
   ) %>% 
   rename(
     geometry = x
@@ -93,11 +102,11 @@ cs_closure_proj <- cs_closure_proj %>%
 
 # 2000: 15sep - 31oct, source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
 # 2005: 01oct - 15dec source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
-# 2023: 01aug to 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
+# 2023: 01aug - 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
 
 # closure file
 NTZ <- bind_rows(cs_closure_proj, NTZ)
-plot(NTZ)
+plot(NTZ[, !sapply(NTZ, is.list)])
 
 
 ## Adjusting the grid to account for NTZ --------------------------------------
@@ -124,7 +133,8 @@ df_Fished_area <- st_sf(Fished_area) %>%
   mutate(status = "Fished",
          restriction_date_SC = NA,
          restriction_date_TC = NA,
-         restriction_date_TC_months = NA)
+         restriction_date_TC_months = NA,
+         restriction_date_TC_months_perc_fished = NA)
 plot(df_Fished_area)
 
 df_NTZ_union <- st_sf(NTZarea) %>%
@@ -173,7 +183,7 @@ cs_proj <- st_transform(cs, st_crs(water))
 plot(water$geometry); plot(cs_proj, col = NA, border = "red", lwd = 2, add = TRUE)
 
 # find the cell centroid that are inside the cockburn polygon
-plot(st_centroid(water))
+plot(st_centroid(water[, !sapply(water, is.list)]))
 inside <- st_within(st_centroid(water), cs_proj)
 cs_cell_id <- which(lengths(inside) > 0)
 
@@ -181,7 +191,7 @@ intersections <- st_within(st_centroid(water$geometry), cs_proj)
 intersects_logical <- lengths(intersections) > 0
 
 cockburn_cells <- water[intersects_logical, ]
-plot(cockburn_cells)
+plot(cockburn_cells[, !sapply(cockburn_cells, is.list)])
 cs_cell_id <- cockburn_cells$ID # find the cell IDs
 
 
