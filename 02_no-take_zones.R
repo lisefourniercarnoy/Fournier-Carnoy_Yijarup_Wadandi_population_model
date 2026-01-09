@@ -36,7 +36,7 @@ file_water  <- "data/output_data/01_B_water.rds"
 NTZ <-  st_read(file_NTZ) %>%
   st_transform(common_crs) %>%
   mutate(
-    restriction_date = case_when(name == "Rottnest"           ~ "01/07/2007", # add when exactly each NTZ was put in place
+    restriction_date_SC = case_when(name == "Rottnest"           ~ "01/07/2007", # add when exactly each NTZ was put in place
                                  name == "Shoalwater Islands" ~ "01/01/2007",
                                  name == "Marmion"            ~ "30/01/1992",
                                  name == "Two Rocks"          ~ "01/07/2018",
@@ -45,7 +45,7 @@ NTZ <-  st_read(file_NTZ) %>%
                                  name == "South-west Corner"  ~ "01/07/2018",
                                  .default = NULL # others aren't in the final grid
                                  ),
-    restriction_date = as.list(restriction_date)
+    restriction_date_SC = as.list(restriction_date_SC)
   ) %>% 
   st_make_valid()
 plot(NTZ$geometry)
@@ -84,14 +84,15 @@ plot(cs_closure_proj, col = NA, border = "red", lwd = 2); plot(water$geometry, a
 cs_closure_proj <- cs_closure_proj %>% 
   mutate(
     name = "Cockburn Sound temporal closure",
-    restriction_date = list(c(2000, 2005, 2023))
+    restriction_date_TC = list(c(2000, 2005, 2023)),
+    restriction_date_TC_months = list(c("9-10", "10-11-12", "8-9-10-11-12-1"))
   ) %>% 
   rename(
     geometry = x
   )
 
-# 2000: 6 weeks from 15sep 31oct, source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
-# 2005: 4 months from 01oct 15dec source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
+# 2000: 15sep - 31oct, source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
+# 2005: 01oct - 15dec source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
 # 2023: 01aug to 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
 
 # closure file
@@ -121,7 +122,9 @@ plot(Fished_area$geometry)
 # Put this back together with the fished area to create "water" again
 df_Fished_area <- st_sf(Fished_area) %>%
   mutate(status = "Fished",
-         restriction_date = NA)
+         restriction_date_SC = NA,
+         restriction_date_TC = NA,
+         restriction_date_TC_months = NA)
 plot(df_Fished_area)
 
 df_NTZ_union <- st_sf(NTZarea) %>%
