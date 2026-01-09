@@ -66,121 +66,62 @@ no_take_list <- list(water$ID[water$status %in% c('NTZ_boat_shore', 'NTZ_boat')]
 water <- water %>% 
   mutate(Area = as.vector((water$cell_area)/1000000))
 
-# Cells that are in NTZs will have catchability of 0 after designation (2018)
-water_area <- water %>% 
-  dplyr::select(status, Area, restriction_date) %>% 
-  mutate(
-    restriction_year = substr(restriction_date, 7, 10),
-    area_1900 = Area,
-    area_1992 = if_else(restriction_year > "1992", Area, 0),
-    area_2007 = if_else(restriction_year > "2007", Area, 0),
-    area_2018 = if_else(restriction_year > "2018", Area, 0),
-    area_2019 = if_else(restriction_year > "2019", Area, 0),
-    mutate(across(starts_with("area_"), ~ coalesce(.x, Area))) # for all cells that are unrestricted (restriction_date = NA), area is area.
-    ) %>% 
-  
-  dplyr::select(area_1900, area_1992, area_2007, area_2018, area_2019) %>% 
-  mutate(sum_1900 = sum(area_1900),
-         sum_1992 = sum(area_1992),
-         sum_2007 = sum(area_2007),
-         sum_2018 = sum(area_2018),
-         sum_2019 = sum(area_2019)) %>% 
-  st_drop_geometry() %>% 
-  mutate(q_1900 = area_1900/sum_1900,
-         q_1992 = area_1992/sum_1992,
-         q_2007 = area_2007/sum_2007,
-         q_2018 = area_2018/sum_2018,
-         q_2019 = area_2019/sum_2019
-         ) %>% 
-  mutate(ID = row_number())
-
-# Create an array of catchability for each cell (rows) and each year (columns)
 NCELL <- nrow(water)
-spatial_q <- array(0.000006, dim = c(NCELL, n_years_tot)) # Why is the original catchability set to 0.000006 ?
-
-# The following bit is for changing catchability after NTZ implementation.
-for (COL in (n_years_pre18+1):n_years_tot) {
-  spatial_q[, COL] <- spatial_q[, COL-1] * 1.02
-} # This increases post-2018 cells by 2% each year?? if the min size increases surely catchability decreases?
-
-# Change catchability of cells pre-SZ
-for (COL in 1:n_years_pre18) { # 2017 is year number 37, and the last year with fishing before NTZs
-  for (ROW in 1:NCELL){
-    spatial_q[ROW, COL] <- spatial_q[ROW, COL] / water_area[ROW, 5]
-  }
-} # For all cells pre-SZ, catchability is in proportion to the cell's area.
-
-for (COL in (n_years_pre18+1):n_years_tot) { # +1 because n_years_pre18 relates to 2017
-  for (ROW in 1:NCELL){
-    spatial_q[ROW, COL] <- spatial_q[ROW, COL] / water_area[ROW, 6]
-  }
-} # For all cells post-SZ, catchability is in proportion to the cell's area. (Cells in NTZs are obviously zero)
-
-
-## test
-
-
-## I HAVENT FIGURED OUT HOW THIS AFFECTS ANYTHING BEYOND THIS SCRIPT YET
-# okay so we want to calculate the catchability of each cell over each year, because there are a few NTZ implementation dates.
-q_all_years <- array(0.000006, dim = c(NCELL, n_years_tot))
-q_all_years[, 1:(1992-year_start-1)] <- water_area$q_1900
-q_all_years[, (1992-year_start):(2007-year_start-1)] <- water_area$q_1992
-q_all_years[, (2007-year_start):(2018-year_start-1)] <- water_area$q_2007
-q_all_years[, (2018-year_start):(2019-year_start-1)] <- water_area$q_2018
-q_all_years[, (2019-year_start):n_years_tot] <- water_area$q_2019
-
-area_all_years <- array(0.000006, dim = c(NCELL, n_years_tot))
-area_all_years[, 1:(1992-year_start-1)] <- water_area$area_1900
-area_all_years[, (1992-year_start):(2007-year_start-1)] <- water_area$area_1992
-area_all_years[, (2007-year_start):(2018-year_start-1)] <- water_area$area_2007
-area_all_years[, (2018-year_start):(2019-year_start-1)] <- water_area$area_2018
-area_all_years[, (2019-year_start):n_years_tot] <- water_area$area_2019
-
-spatial_q <- array(0.000006, dim = c(NCELL, n_years_tot))
-for (COL in 1:n_years_tot) {
-  for (ROW in 1:NCELL) {
-    spatial_q[ROW, COL] <- q_all_years[ROW, COL] / area_all_years[ROW, COL]
-  }
-}
-spatial_q[is.na(spatial_q)] <- 0 # replace NaNs by zero
-
-
-## test again to make this reproducible 
-
-## NOT FINISHEDDDD ##
-
-q_all_years <- array(0.000006, dim = c(NCELL, n_years_tot))
-
-restriction_years <- c(year_start, 1992, 2007, 2018, 2019, year_end)
+change_years <- c(year_start, 1992, 2007, 2018, 2019)
 water_area <- data.frame(
   ID = water$ID,
-  matrix(0, nrow = NCELL, ncol = length(restriction_years),
-    dimnames = list(NULL, paste0("area_", restriction_years))
+  restriction_date = water$restriction_date,
+  matrix(0, nrow = NCELL, ncol = (year_end-year_start+1),
+         dimnames = list(NULL, paste0("area_", year_start:(year_start+(year_end-year_start))))
   )) # this creates a dataframe that's automatically as big as the number of restriction changes.
 
-for (COL in 2:(length(restriction_years)+1)) { # for every change in spatial restriction...
+start_col <- paste0("area_", year_start)
+water_area[start_col] <- water$cell_area # put the unrestricted area in the first column
+start_col_index <- which(names(water_area) == paste0("area_", year_start))
+
+for (COL in (start_col_index+1):ncol(water_area)) { # for all years... (excluding the start year)
   for (ROW in 1:NCELL) { # and every cell...
-    water_area[ROW, COL] <- ifelse(water$restriction_date >= as.numeric(gsub("area_", "", setdiff(names(water_area), "ID"))), 0, water$Area)
-  } # ... the area is set to zero if the
-}
+    
+    year_col <- as.numeric(gsub("area_", "", names(water_area)[COL]))
+    res_date <- as.numeric(substr(water$restriction_date, 7, 10))[ROW]
+    
+    water_area[ROW, COL] <- if (is.na(res_date)) {
+      water$cell_area[ROW]
+    } else if (res_date <= year_col) {
+      0
+    } else {
+      water$cell_area[ROW]
+    }
+  }
+} # this loop automatically calculates the fishable area, relative to the user-entered restriction years.
+glimpse(water_area)
 
-as.numeric(gsub("area_", "", setdiff(names(water_area), "ID")))
+for (COL in (start_col_index):ncol(water_area)) { # for all years... (excluding the start year)
+  q_col_name <- paste0("sum_", substr(colnames(water_area)[COL], 6, 10))
+  water_area[q_col_name] <- sum(water_area[colnames(water_area)[COL]])
+} # this loop calculates the fishable area sum for all years
+
+q_all_years <- array(0.000006, dim = c(NCELL, n_years_tot))
+
+for (COL in 1:n_years_tot) { # for every year
+  for (ROW in 1:NCELL) { # and every cell...
+    area_col_name <- paste0("area_", year_start+COL-1)
+    sum_col_name <- paste0("sum_", year_start+COL-1)
+    
+    q_all_years[ROW, COL] <- water_area[ROW, area_col_name]/water_area[ROW, sum_col_name]
+  }
+} # this loop calculates the catchability of every cell for every year.
 
 
-## end test
-
-
-
-
-spatial_q[spatial_q == Inf] <- 0 # IDK what this does.
-summary(spatial_q) # this is a matrix that tells us for each cell (each row), and each year (each column), how likely you'd catch a fish in that cell based on how big it is.
+q_all_years[q_all_years == Inf] <- 0 # IDK what this does.
+summary(q_all_years) # this is a matrix that tells us for each cell (each row), and each year (each column), how likely you'd catch a fish in that cell based on how big it is.
 
 # Plot check
-catch_df <- as.data.frame(spatial_q)
+catch_df <- as.data.frame(q_all_years)
 colnames(catch_df) <- paste0("Year_", year_start:(year_start + n_years_tot-1))
-catch_df$ID <- water_area$ID  # or just 1:NCELL if they match in order
+catch_df$ID <- water_area$ID
 water_catch <- water %>% left_join(catch_df, by = "ID")  # ID must be in 'water' too
-water$ID <- water_area$ID  # or use `row_number()`
+water$ID <- water_area$ID
 water_long <- water_catch %>% pivot_longer(cols = starts_with("Year_"), names_to = "Year", names_prefix = "Year_", values_to = "Catchability") %>% mutate(Year = as.numeric(Year))
 ggplot(water_long[water_long$Year %in% c(1900, 2000, 2010, 2020),]) +
   geom_sf(aes(fill = Catchability), color = NA) +
@@ -190,7 +131,7 @@ ggplot(water_long[water_long$Year %in% c(1900, 2000, 2010, 2020),]) +
 ggsave("plots/checking_plots_during_setup/04A_commercial_catchability_pre.post-NTZ.png", plot = last_plot())
 
 # Save for future use.
-saveRDS(spatial_q, file = paste0("data/output_data/04A_commercial_spatial_q_NTZ.rds"))
+saveRDS(q_all_years, file = paste0("data/output_data/04A_commercial_spatial_q_NTZ.rds"))
 
 
 ## 2. Fishing days -------------------------------------------------------------
