@@ -71,7 +71,7 @@ change_years <- c(year_start, 1992, 2007, 2018, 2019) # spatial restrictions
 
 
 ## test
-water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x year x months
+water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x months x years
 
 water_area[, 1:12, 1] <- water$cell_area # for all months of the first year, the catchable area is the cell's area.
 
@@ -81,6 +81,7 @@ for (YEAR in 1:dim(water_area)[3]) {
       current_year <- year_start + YEAR - 1
       restriction_date <- as.numeric(substr(water$restriction_date, 7, 10))[CELL]
       
+      # catchability based on spatial closures
       water_area[CELL, MONTH, YEAR] <- if (is.na(restriction_date)) {
         water$cell_area[CELL]
       } else if (current_year > restriction_date) {
@@ -89,12 +90,34 @@ for (YEAR in 1:dim(water_area)[3]) {
         water$cell_area[CELL]
       }
       
-      # ADD A CATCHABILITY REDUCTION FOR TEMPORAL CLOSURES ?
-
-      
+      # catchability based on temporal closures
+      if (water$status[CELL] == "temporal_closure") {
+        
+        TC_years <- list(water$restriction_date_TC[ROW])[[1]][[1]]
+        TC_months <- list(water$restriction_date_TC_months[ROW])[[1]][[1]]
+        TC_perc_fished <- list(water$restriction_date_TC_months_perc_fished[ROW])[[1]][[1]]
+        
+        for (res_year in 1:length(TC_years)) {
+          year_check <- (year_start + YEAR) >= TC_years[res_year] # check whether we've passed a new restriction change year
+          
+          if (year_check == TRUE) {
+            if (MONTH %in% as.integer(strsplit(TC_months[res_year], "-")[[1]]) ) {
+              water_area[CELL, MONTH, YEAR] <- 0
+            } else {
+              water_area[CELL, MONTH, YEAR] <- water$cell_area[CELL]
+            }
+          }
+        } 
+      }
     }
   }
 } # for every month and every year, the catchability of each cells is calculated based
+
+# check whether things make sense
+
+water_area[1, 12, 100]
+
+
 
 
 for (COL in (2):ncol(water_area)) { # for all years... (excluding the start year)
