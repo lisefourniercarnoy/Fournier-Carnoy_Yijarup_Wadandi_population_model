@@ -169,7 +169,7 @@ summary(rowSums(st_drop_geometry(water[habitat_cols]))) # here each cell's habit
 water[habitat_cols] <- as.data.frame(st_drop_geometry(water[habitat_cols])) / rowSums(st_drop_geometry(water[habitat_cols]))
 
 summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
-plot(water[, !sapply(water, is.list)]) # plot all but list-columns
+
 
 ## Save files to use in the next step -----------------------------------------
 
@@ -223,6 +223,7 @@ for (habitat in names(habitat_perc)) {
 glimpse(p_habitat)
 
 ## Save all the files you need to remake these matrices -----------------------
+
 saveRDS(pDist, "data/output_data/03_pDist.rds")
 saveRDS(p_habitat, "data/output_data/03_p_habitat.rds")
 
@@ -326,15 +327,14 @@ do.call(grid.arrange, c(plot_list, ncol = 2, nrow = 3))
 
 ## Recruitment matrix ---------------------------------------------------------
 
-# we want the recruits to be in seagrass, and then move out from there 
-cockburn_list <- water$ID[water$type == "shore_north_cockburn_warnbro" | 
-                            water$type =="north_cockburn_warnbro"]
+# we want the recruits to be in seagrass and spawning ground, and then move out from there 
+sg_list <- water$ID[water$spawning_status == TRUE]
 
 dispersal <- as.data.frame(seagrass) %>%
   rename(perc_habitat = seagrass) %>%
   mutate(ID = water$ID, # so that it lines up with the seagrass ID and also cockburn sound cells
          perc_habitat = ifelse(is.na(perc_habitat), 0, perc_habitat),
-         cockburn = ifelse(ID %in% cockburn_list, 1, 0)) # replace NAs with zeroes for now.
+         spawning = ifelse(ID %in% sg_list, 1, 0)) # replace NAs with zeroes for now.
 dispersal$area_km2 <- as.vector(water$cell_area*0.000001) # convert cell_area to km2
 glimpse(dispersal)
 sum(is.na(dispersal$perc_habitat)) # no NAs, all good.
@@ -345,9 +345,9 @@ dispersal <- dispersal %>%
          perc_habitat = perc_habitat * 0.5) %>% 
   glimpse()
 
-# check that water type is correct
+# check that spawning ground is correct
 ggplot() +
-  geom_sf(data = water, aes(fill = dispersal$cockburn))
+  geom_sf(data = water, aes(fill = dispersal$spawning), col = NA)
 
 
 recruitment <- array(0, dim = c(nrow(dispersal), 2))
@@ -357,9 +357,9 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(dispersal)))
 cell_utility[,2] <- as.numeric(dispersal$ID) 
 
 for(cell in 1:nrow(recruitment)){
-  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25*exp(dispersal[cell, "cockburn"]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a cockburn sound cell.
+  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25*exp(dispersal[cell, "spawning"]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell.
   cell_utility[cell, 1] <- as.numeric(U)
-} # this loop makes Cockburn sound cells and seagrass cells exponentially more attractive.
+} # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
 rowU <- as.data.frame(sum(cell_utility[,1]))
 
@@ -375,7 +375,7 @@ water_recruitment <- water %>%
 
 ggplot() +
   geom_sf(data = water_recruitment, aes(fill = recruitment_prob), color = NA, lwd = 0) +
-  scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
+  scale_fill_gradient(low = colour_palette[4], high = colour_palette[6]) +
   ggtitle("Recruitment Probability Map") +
   theme_minimal() # looks okay.
 
