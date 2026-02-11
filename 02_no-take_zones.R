@@ -100,7 +100,7 @@ TC <- TC %>%
     name = "Cockburn Sound temporal closure", # WHATEVER NAME IS HERE SHOULD HAVE THE EXACT TERMS 'temporal closure' IN IT OR THE REST WONT WORK
     TC_restriction_date = list(as.integer(vapply(temporal_closure_details, `[`, "", 1))),
     TC_restriction_months = list(vapply(temporal_closure_details, `[`, "", 2)),
-    TC_restriction_date_perc_fished = list(vapply(temporal_closure_details, `[`, "", 3))
+    TC_restriction_perc_fished = list(vapply(temporal_closure_details, `[`, "", 3))
   ) %>% 
   rename(
     geometry = x
@@ -140,7 +140,7 @@ fished_area <- st_sf(fished_area) %>%
          SC_restriction_date = NA,
          TC_restriction_date = NA,
          TC_restriction_months = NA,
-         TC_restriction_date_perc_fished = NA)
+         TC_restriction_perc_fished = NA)
 plot(fished_area$geometry)
 fished_area[,fleets] <- NA
 
@@ -158,9 +158,6 @@ ggplot(water) +
   geom_sf(aes(fill = status)) +
   theme_void() +
   scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
-
-# give a new cell ID to all cells, because a few were cut in two in the process
-water$ID <- 1:nrow(water)
 
 
 ## Identify spawning ground ---------------------------------------------------
@@ -217,6 +214,9 @@ water <- water %>%
   filter(as.numeric(cell_area)>1)
 water <- st_make_valid(water) %>% 
   st_as_sf()
+
+# give a new cell ID to all cells, because a few were cut in two in the process
+water$ID <- 1:nrow(water)
 
 
 ## Save files for next step ---------------------------------------------------
