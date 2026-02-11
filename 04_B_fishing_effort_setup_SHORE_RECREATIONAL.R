@@ -21,17 +21,18 @@
 
 rm(list = ls())
 
-library(tidyverse)
-library(sf)
-library(raster)
-library(stringr)
-library(forcats)
-library(RColorBrewer)
-library(geosphere)
-library(abind)
-library(sfnetworks)
-library(purrr)
-library(exactextractr)
+library(tidyverse) # data manipulation
+library(sf) # shapefiles
+#library(raster) # bathy rasters
+library(terra) # for fast raster computations
+#library(stringr)
+#library(forcats)
+library(RColorBrewer) # plotting colours
+#library(geosphere)
+library(abind) # dealing with matrices
+library(sfnetworks) # distance from cell to cell
+#library(purrr)
+library(exactextractr) # extracting raster values
 
 
 ## Custom plotting parameters -------------------------------------------------
@@ -40,135 +41,190 @@ source("custom_theme.R")
 
 ## 0. Files used in this script -----------------------------------------------
 
-file_wa         <- "data/output_data/01_wadandi_land.shp"
-file_ntz        <- "data/output_data/01_wadandi_NTZ.shp"
-file_bathy      <- "data/input_data/wadandi_250m_bathy.tif"
-file_carpark    <- "data/input_data/wadandi_carparks.shp"
+file_wa         <- "data/output_data/01_B_land.shp"
+#file_ntz        <- "data/output_data/01_B_wadandi_NTZ.shp"
+file_bathy      <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
+file_carpark_w  <- "data/input_data/wadandi_carparks.shp"
+file_carpark_n  <- "data/input_data/north_carparks.shp"
 file_water      <- "data/output_data/03_water.rds"
 file_network    <- "data/output_data/03_network_shapefile.shp"
 
 # load land and ntz for sanity checks throughout
 land <- st_read(file_wa); plot(land$geometry)
-ntz <- st_read(file_ntz); plot(ntz$geometry, add = T)
+#ntz <- st_read(file_ntz); plot(ntz$geometry, add = T)
 
-year_start <- 1945
+year_start <- 1900
 year_end <- 2024
 n_years_tot <- year_end - year_start +1
-n_years_pre18 <- 2018 - year_start
 
 crs_raster <- "+proj=longlat +datum=WGS84 +no_defs"
 bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -33.2), crs = crs_raster)
 
-
 ## 1. Catchability ------------------------------------------------------------
 
-water <- readRDS(file_water) %>% filter(!is.na(ID)); plot(water)
 
-ntz_shore_cells <- water$ID[water$type == "shore" & water$status %in% c('NTZ_for_shore_and_boat')]
-shore_cells <- water$ID[water$type == "shore"]
+## catchability is the proportion of available fish in a population that would be captured by a unit of effort. (van Oostenbrugge et al. 2008)
+## in a grid, each cell has a portion of the catchability of the whole grid, which we need to calculate.
+## in this section (1.) we calculate the fishable area of the cells in each time step (1.a), then divide it by the fishable area of the whole grid at each time step (1.b)
+## which gives us each the portion of Catchability of each cell.
+## because the area that is catchable changes (with spatial and temporal restrictions), we have to calculate the grid's catchability for each month of each year.
 
-# We'll calculate the catchability of each cell by its area and whether it's no-take or not.
-water <- water %>% 
-  mutate(area = as.vector((water$cell_area)/1000000))
 
-# Cells that are in NTZs will have catchability of 0 after designation (2018)
-water_area <- water %>% # this is for all cells, pelagic and shore
-  dplyr::select(ID, status, area, type) %>% 
-  mutate(area_2000 = ifelse(!(ID %in% shore_cells), 0, area), # make offshore cells unfishable for pre-SZ years
-         area_2018 = ifelse(!(ID %in% shore_cells) | ID %in% ntz_shore_cells, 0, area) # make offshore cells + SZ cells unfishable for post-SZ years
-         ) %>% 
-  dplyr::select(ID, area_2000, area_2018) %>%
-  mutate(sum_2000 = sum(area_2000),
-         sum_2018 = sum(area_2018)
-         ) %>% 
-  st_drop_geometry() %>% 
-  mutate(q_2000 = area_2000/sum_2000,
-         q_2018 = area_2018/sum_2018
-         ) %>% 
-  glimpse()
+### 1.a. find the fishable area of each cell in each time step ----------------
 
-# create an array of catchability for each cell (rows) and each year (columns)
-NCELL <- length(shore_cells)
-spatial_q <- array(0.000006, dim = c(NCELL, n_years_tot)) # Why is the original catchability set to 0.000006 ?
+water <- readRDS(file_water)# %>% filter(!is.na(ID))
+NCELL <- nrow(water)
 
-# index of the q_2000 and q_2018 columns
-ix_q2000 <- which(colnames(water_area) == "q_2000")
-ix_q2018 <- which(colnames(water_area) == "q_2018")
+# identify the important cells
+temporal_cells <- water$ID[water$status == "TC"]
+offshore_cells <- water$ID[!water$type %in% c("shore_north", "shore_wadandi")]
 
-for (ROW in 1:NCELL) {
-  id <- shore_cells[ROW]
-  i_area <- match(id, water_area$ID)
+# setup the arrays to calculate things.
+water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x months x years
+water_area[, 1:12, 1] <- water$cell_area # for all months of the first year, the catchable area is the cell's area.
+
+# the loop goes as follows: for each time step, 
+# check whether there's a spatial restriction that year, if so the fishable area is 0
+# then, if the cell has a temporal closure, restrict fishable area as needed.
+for (YEAR in 1:dim(water_area)[3]) {
   
-  q_2000 <- water_area[i_area, ix_q2000]
-  q_2018 <- water_area[i_area, ix_q2018]
+  current_year <- year_start + YEAR - 1
   
-  # Pre-NTZ (up to 2017)
-  for (COL in 1:n_years_pre18) {
-    spatial_q[ROW, COL] <- spatial_q[ROW, COL] / q_2000
-  }
-  
-  # Post-NTZ (from 2018 onward)
-  if (id %in% ntz_shore_cells) {
-    spatial_q[ROW, (n_years_pre18+1):n_years_tot] <- 0
-  } else {
-    for (COL in (n_years_pre18 + 1):n_years_tot) {
-      spatial_q[ROW, COL] <- spatial_q[ROW, COL] / q_2018
+  for (MONTH in 1:dim(water_area)[2]) {
+    
+    # spatial closures
+    restriction_dates <- as.numeric(substr(water$SC_restriction_date, 7, 10))
+    fleet_allowed <- water$boat_rec # if FALSE, cell is not fishable for this fleet
+    
+    restriction_active <- !is.na(restriction_dates) & current_year >= restriction_dates
+    fleet_blocked <- !is.na(fleet_allowed) & fleet_allowed == FALSE
+    restricted <- restriction_active | fleet_blocked
+    
+    water_area[, MONTH, YEAR] <- ifelse( # if there are restrictions, fishable area = 0.
+      restricted,
+      0,
+      water$cell_area
+    )
+    
+    # temporal closures
+    for (CELL in temporal_cells) {
+      
+      # find the relevant temporal restrictions
+      TC_years_list <- water$TC_restriction_date[[CELL]] # years the closure has changed
+      TC_months_list <- water$TC_restriction_months[[CELL]] # months restricted
+      TC_perc_list <- water$TC_restriction_perc_fished[[CELL]] # how much they are restricted
+      
+      current_TC <- which(TC_years_list <= current_year) # only select the temporal closures that exist at the current point
+      
+      if (length(current_TC) > 0) { # if there are temporal restrictions at this YEAR, restrict the fishable area accordingly
+        current_TC <- max(current_TC)
+        
+        TC_months_current <- as.integer(strsplit(TC_months_list[current_TC], "-")[[1]])
+        TC_perc_current   <- as.numeric(strsplit(TC_perc_list[current_TC], "-")[[1]])
+        
+        if (MONTH %in% TC_months_current) {
+          month_idx <- match(MONTH, TC_months_current)
+          water_area[CELL, MONTH, YEAR] <- water$cell_area[CELL] * TC_perc_current[month_idx]
+        }
+      }
     }
   }
-} # this is a cleaner version of Charlotte's loops. there is no increase in catchability over time for now.
-summary(spatial_q) # this is a matrix that tells us for each cell (each row), and each year (each column), how likely you'd catch a fish in that cell based on how big it is.
+} # this loop calculates for every month and every year, the fishable area of each cell.
+
+# override the fishability of offshore cells - here for shore fishing, none of them are fishable.
+water_area[offshore_cells,,] <- 0
+
+### sanity check station
+
+test_cell <- 200
+test_month <- 10
+test_year <- 125
+
+# reference cell numbers as of 13.01.2026:
+## cockburn sound cell (temporal closure): 1
+## SWC NTZ cell: 200
+## random fished cell: 1000
+
+# restrictions in this cell should be:
+glimpse(st_drop_geometry(water[test_cell, c("status", "SC_restriction_date", "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished")]))
+
+# check that it is correct
+cat("In month", test_month, "of year", (year_start+test_year),
+    ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable.", "NOT fishable."), "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
 
 
-# Plot check
-catch_df <- as.data.frame(spatial_q)
-catch_df[catch_df == 0] <- NA # this is just for visualisation purposes, to show that there is no fishing in SZ after 2018
+### 1.b. divide the fishable area by the grid sum area ------------------------
 
-colnames(catch_df) <- paste0("Year_", year_start:(year_start + n_years_tot-1))
-catch_df$ID <- water_area$ID[water_area$ID %in% water$ID[water$type == "shore"]]  # or just 1:NCELL if they match in order
+water_q <- array(0.000006, dim = c(NCELL, 12, (year_end-year_start+1)))
+
+for (YEAR in 1:dim(water_q)[3]) {
+  for (MONTH in 1:dim(water_q)[2]) {
+    
+    water_q[, MONTH, YEAR] <- water_area[, MONTH, YEAR] / sum(water_area[1:dim(water_q)[2]])
+  }
+} # this loop calculates the catchability of each cell for every year, based on the fishable area at that period.
+
+summary(water_q)
+
+
+### sanity check station 
+
+test_cell <- 1
+test_month <- 10
+test_year <- 120
+
+# reference cell numbers as of 13.01.2026:
+## cockburn sound cell (temporal closure): 1
+## SWC NTZ cell: 200
+## random fished cell: 1000
+
+catch_df <- as.data.frame(water_q[, test_month, test_year])
+names(catch_df) <- "test_catchability"
+catch_df$ID <- water$ID
+
 water_catch <- water %>% left_join(catch_df, by = "ID")  # ID must be in 'water' too
-water$ID <- water_area$ID  # or use `row_number()`
-water_long <- water_catch %>% pivot_longer(cols = starts_with("Year_"), names_to = "Year", names_prefix = "Year_", values_to = "Catchability") %>% mutate(Year = as.numeric(Year))
-ggplot(water_long[water_long$Year %in% c(2000, 2020),]) +
-  geom_sf(data = land, fill = "lightgray", col = NA) +
-  geom_sf(data = ntz, fill = "#E4F2FF", col = NA) +
-  geom_sf(aes(fill = log(Catchability + 1e-06)), color = NA) + # adding a small value to log(catchability) because log(0) = -Inf and doesn't display well
-  scale_fill_gradientn(colours = colour_palette[4:6], na.value = NA) +
-  facet_wrap(~ Year, ncol = 2) +
-  labs(title = "Catchability over time (pre- and post- NTZ)", 
-       fill = "log(Catchability)") +
-  theme_minimal()
-ggsave("plots/checking_plots_during_setup/04B_shore_rec_catchability_pre.post-NTZ.png", plot = last_plot())
 
-# Save for future use.
-saveRDS(spatial_q, file = paste0("data/output_data/04B_shore_rec_spatial_q_NTZ.rds"))
+ggplot(water_catch) +
+  geom_sf(aes(fill = test_catchability), color = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  labs(title = paste0("Catchability in ", (year_start+test_year), ", month ", test_month), fill = "Catchability") +
+  theme_minimal()
+
+ggsave("plots/checking_plots_during_setup/04_B_shore_rec_catchability_test_year.png", plot = last_plot(), height = 15, width = 5)
+
+## save for future use --------------------------------------------------------
+
+saveRDS(water_q, file = "data/output_data/04_B_shore_rec_spatial_q_NTZ.rds")
+
+#water_q <- readRDS("data/output_data/04_B_shore_rec_spatial_q_NTZ.rds")
 
 
 ## 2. Fishing days ------------------------------------------------------------
 
-# Total shore days
-# Provide data from the literature (extrapolated with multipliers, see google sheets "YIJARUP - Fishing effort reconstruction")
-years <- c(1987, 1989, 2000, 2020); shore_days <- c(79600, 84895, 107380, 133095)
-shore_days_lit <- data.frame(years, shore_days)
-plot(x = shore_days_lit$years, y = shore_days_lit$shore_days, type = "l", col = colour_palette[4], lwd = 4, main = "shore days in wadandi country from the literature")
+g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_boat_days_total (19-01-2026).csv", skip = 1) %>% 
+  dplyr::select(c(YEAR, state.pop:last_col())) %>% #select only shore fishing columns.
+  glimpse()
 
-# fit a logistic curve
-start_vals <- list(a = 100000, b = 0.2, c = 2000)
-logistic_model <- nls(
-  shore_days ~ a / (1 + exp(-b * (years - c))),
-  start = start_vals
-)
-predict_years <- year_start:year_end
-predicted_annual_days <- predict(logistic_model, newdata = data.frame(years = predict_years))
-years <- year_start:year_end
+plot(g_sheets$YEAR, g_sheets$state.pop, type = "l", col = colour_palette[5], lwd = 4,
+     #main = "Shore Boat Days in \nWadandi Country (dashed) and Metro (solid) \nfrom the Literature (with some extrapolation)", 
+     xlab = "Year", ylab = "WA population",
+     ylim = c(0, max(g_sheets$state.pop))
+     )
 
-annual_effort_shore <- data.frame(year = years, predicted_shore_days = predicted_annual_days)
+lines(g_sheets$YEAR, g_sheets$shore.fishing.days, col = colour_palette[4], lwd = 4)
+
+legend("topleft", legend = c("shore fishing days", "WA population"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
+
+annual_effort_shore <- g_sheets %>% dplyr::select(c(YEAR, shore.fishing.days)) %>% 
+  rename(year = YEAR,
+         shore_days = shore.fishing.days)
 
 # check
-plot(annual_effort_shore$year, annual_effort_shore$predicted_shore_days, type = "l", col = colour_palette[5], lwd = 4,
+plot(annual_effort_shore$year, annual_effort_shore$shore_days, type = "l", col = colour_palette[5], lwd = 4,
      main = "Shore Days in Wadandi Country \nfrom the Literature \n(with some extrapolation)", 
      xlab = "Year", ylab = "Boat Days")
-lines(shore_days_lit$years, shore_days_lit$shore_days, col = colour_palette[4], lwd = 4)
-legend("bottomright", legend = c("Observed", "Predicted (logistic)"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
+legend("bottomright", legend = c("shore days (derived from population)"), col = c(colour_palette[5]), lwd = 4)
+
 
 # Bring in seasonal multipliers
 seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022
@@ -181,12 +237,12 @@ barplot(seasonal_multipliers, col = colour_palette[6], main = "distribution of y
 
 # Add monthly distribution back to the timeseries
 shore_effort <- expand.grid(
-  year = predict_years,
+  year = year_start:year_end,
   month = sprintf("%02d", 1:12)
 ) %>%
   arrange(year, month) %>%
   mutate(
-    annual_shore_days = rep(predicted_annual_days, each = 12),
+    annual_shore_days = rep(annual_effort_shore$shore_days, each = 12),
     monthly_effort = annual_shore_days * seasonal_multipliers[month]
   ) %>%
   dplyr::select(year, month, monthly_effort)
@@ -199,7 +255,7 @@ ggplot(shore_effort, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = m
   theme_minimal() +
   geom_smooth(color = colour_palette[5])
 
-saveRDS(shore_effort, "data/output_data/04B_shore_rec_total_boat_days.rds")
+saveRDS(shore_effort, "data/output_data/04_B_shore_rec_total_boat_days.rds")
 
 # Proportion of each month's contribution to yearly boat days
 shore_month_prop <- shore_effort %>% 
@@ -214,15 +270,27 @@ shore_month_prop <- shore_month_prop %>%
 prop_month_ave <- shore_month_prop[1:12, c(2, 5)]
 
 plot(prop_month_ave)
-saveRDS(prop_month_ave, "data/output_data/04B_shore_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
+saveRDS(prop_month_ave, "data/output_data/04_B_shore_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
+
+# unlike boat fishing i am assigning each carpark the same proportion of effort in north and wadandi, because no data anywhere.
+CP_n <- st_read(file_carpark_n) %>% 
+  mutate(id = 1:nrow(.),
+         area = paste0(rough_area, "_", id)) %>% 
+  rename(year_strt = year_start) %>% 
+  dplyr::select(c(id, year_strt, area)) %>%
+  glimpse()
+CP_w <- st_read(file_carpark_w) %>% 
+  dplyr::select(c(id, year_start, area)) %>%
+  rename(year_strt = year_start) %>% 
+  glimpse()
 
 
-CP <- st_read(file_carpark) %>% 
+CP <- rbind(CP_n, CP_w) %>% 
   st_transform(4283) %>%
   st_make_valid() %>%
-  mutate(year_strt = as.numeric(year_start),
-         year_strt = ifelse(is.na(year_strt), 1945, year_strt), # fill in missing dates with the simulation start year (here year_start is 1945, and year_strt is the build date)
-         build_mnth = ifelse(is.na(month_strt), 1, month_strt), # assume Jan if unknown
+  mutate(year_strt = as.numeric(year_strt),
+         year_strt = ifelse(is.na(year_strt), year_start, year_strt), # fill in missing dates with the simulation start year (here year_start is 1945, and year_strt is the build date)
+         #build_mnth = ifelse(is.na(month_strt), 1, month_strt), # assume Jan if unknown
          norm_popularity = 1 / length(unique(area))) %>% # popularity is set equally for now
   glimpse()
 plot(water$geometry); plot(CP$geometry, col = colour_palette[5], pch = 16, cex = 1.5, add = TRUE)
@@ -236,7 +304,8 @@ shore_effort_df <- expand.grid(
   date = shore_effort$date
 ) %>%
   mutate(
-    build_date = as.Date(paste(CP$year_strt[CP_index], CP$build_mnth[CP_index], "01", sep = "-")),
+    #build_date = as.Date(paste(CP$year_strt[CP_index], CP$build_mnth[CP_index], "01", sep = "-")),
+    build_date = as.Date(paste(CP$year_strt[CP_index], "01-01", sep = "-")), # for now build dates are all Jan, when i have more info, use line above.
     norm_popularity = CP$norm_popularity[CP_index],
     carpark_name = CP$name[CP_index]
   ) %>%
@@ -260,12 +329,12 @@ shore_effort_df <- shore_effort_df %>%
   ) %>%
   ungroup() %>%
   dplyr::select(carpark, CP_index, year, month, adjusted_effort)
-saveRDS(shore_effort_df, "data/output_data/04B_shore_rec_effort.rds")
+saveRDS(shore_effort_df, "data/output_data/04_B_shore_rec_effort.rds")
 
 # check each boat ramp is populated correctly
 ggplot(shore_effort_df %>% filter(CP_index %in% c(1:9)), aes(x = year, y = adjusted_effort)) +
   geom_line(color = colour_palette[5]) +
-  facet_wrap(~ carpark, ncol = 3)
+  facet_wrap(~ CP_index, ncol = 3)
 
 # check that the sum of distributed effort is the same as the whole region's effort that we predicted earlier
 test_region_predicted_effort <- shore_effort %>% # the predicted boat effort, from bits of the literature
@@ -308,10 +377,10 @@ network <- st_read(file_network)
 CP <- st_as_sf(CP)
 st_crs(CP) <- NA 
 
-water_shore <- water[water$type == "shore",]
+unique(water$type)
 
-centroids <- st_centroid_within_poly(water_shore)
-plot(water_shore$geometry)
+centroids <- st_centroid_within_poly(st_make_valid(water))
+plot(water$geometry)
 
 points <- as.data.frame(st_coordinates(centroids))%>% # The points start at the bottom left and then work their way their way right
   mutate(ID = row_number()) 
@@ -332,135 +401,162 @@ dim(network_matrix)
 
 glimpse(network_matrix)
 
-DistCP <- as.data.frame(t(network_matrix))
-colnames(DistCP) <- CP$area
-head(DistCP) # this gives us each cell's distance to the carparks
+distCP <- as.data.frame(t(network_matrix))
+colnames(distCP) <- CP$area
+head(distCP) # this gives us each cell's distance to the carparks
 
 # make cells beyond 2km distance not fishable
-head(DistCP)
-DistCP <- DistCP %>%  
+head(distCP)
+distCP <- distCP %>%  
   mutate(across(where(is.numeric), ~ifelse(. > 2, NA, .)))
 
+# make offshore cells not fishable
+distCP[water$ID[!water$type %in% c("shore_north", "shore_wadandi")], ] <- NA
 
 # Plot check
-DistCP <- DistCP %>% mutate(ID = water_shore$ID)
-saveRDS(DistCP, "data/output_data/04B_shore_cell_dist.rds")
+distCP <- distCP %>% mutate(ID = water$ID)
+glimpse(distCP)
+saveRDS(distCP, "data/output_data/04_B_shore_cell_dist.rds")
 
-water_dist <- water_shore %>% left_join(DistCP, by = "ID")
+water_dist <- water %>% left_join(distCP, by = "ID")
+glimpse(water_dist)
 water_dist_long <- water_dist %>% pivot_longer(cols = CP$area, names_to = "access", values_to = "Distance_km")
+glimpse(water_dist_long)
 
-water_dist_long <- water_dist_long[water_dist_long$type == 'shore',]
+#water_dist_long <- water_dist_long[water_dist_long$type %in% c("shore_north", "shore_north_cockburn_warnbro", "shore_wadandi"),]
+carpark_selection <- unique(water_dist_long$access)[c(55)]
+st_crs(CP) <- st_crs(water_dist_long) 
 
-ggplot(water_dist_long %>% filter(access %in% unique(water_dist_long$access)[c(1, 30)])) + 
-  geom_sf(aes(fill = Distance_km), color = NA) + 
+ggplot() +
+  geom_sf(data = water_dist_long %>% filter(access %in% carpark_selection),
+          aes(fill = Distance_km), color = NA) +
   scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ access, ncol = 3) + 
-  labs(title = "Cell distance to each shore access point", fill = "Distance (km)")
-ggsave("plots/checking_plots_during_setup/04B_shore_access_distance.png", plot = last_plot())
+  labs(title = paste0("Cell distance to selected shore access point"), fill = "Distance (km)")
+
+ggsave("plots/checking_plots_during_setup/04_B_shore_access_distance.png", plot = last_plot(),
+       width = 10, height = 15, dpi = 2000, units = "in", device='png')
 
 
 ## 4. Set up a utility function -----------------------------------------------
-Cell_Vars <- DistCP %>% 
-  mutate(Area = as.vector((water_shore$cell_area)/1000000)) # Cells are now in km^2 but with no units
 
-## Now need to create a separate fishing surface for each month of each year based on distance to access point, size of each
-## cell and multiply that by the effort in the cell to spatially allocate the effort across the area
+## Now need to create a separate fishing surface for each month of each year based on distance to boat ramp, size of each cell,
+## and multiply that by the effort in the cell to spatially allocate the effort across the area. Effort is also able to go more offshore over time.
 ## But we need to account for the fact that there will be sanctuary zones going in and the effort that would have gone in there will get allocated somewhere else
 ## Will then need to put the rows/columns back in as 0s 
 
 # What we want to do is to distribute effort across month and year based on :
-# 1. distance to access point, 2. size of the cell, and 3. fishing effort.
+# 1. distance to boat ramp, 2. size of the cell, and 3. whether the cell is 'fishable' that year and 4. fishing effort
 # After the SZ comes in the effort will also be redistributed.
 
-NCELL_pre18 <- nrow(water_shore) # number of cells you can fish in (before SZ) - only shore cells
-NCELL_post18 <- NCELL_pre18 - nrow(water_shore[water_shore$status == 'NTZ_for_shore_and_boat',]) # number of cells you can fish in (after SZ)
+# in boat fishing, each year a bit more area is fishable (deeper every year). this doesn't exist for shore fishing, so replace with 1.
+fishable_long <- expand.grid(year = year_start:year_end,
+                             ID = water$ID) %>% 
+  mutate(fishable_prop = ifelse(ID %in% water$ID[water$type %in% c("shore_north", "shore_wadandi")], 1, 0)) # only shore cells are fishable.
+  
+years <- year_start:year_end
+nyears <- length(years)
 
-Vj <- Cell_Vars %>%
-  mutate(vj = rowSums(across(all_of(CP$area)), na.rm = TRUE)) %>% 
-  glimpse()
+carparks <- unique(CP$area)
+ncarparks <- length(carparks)
 
-Vj_pre18 <- Vj # %>% mutate(across(where(is.numeric), ~ifelse(is.na(.), 0, .))) # replace NAs with 0
-# catchable cells before SZ
+cell_ids <- sort(unique(fishable_long$ID))
+ncells <- length(cell_ids)
 
-Vj_post18 <- Vj %>% filter(!ID %in% ntz_shore_cells) # %>% mutate(across(where(is.numeric), ~ifelse(is.na(.), 0, .))) # replace NAs with 0 otherwise the line below returns NA
-# catchable cells after SZ
+# Get full list of cell IDs from fishable_long
+all_cell_ids <- sort(unique(water$ID))
+ncells <- length(all_cell_ids)
+nyears <- length(years)
 
-area_col <- grep("Area", colnames(Vj)) # extract the column index for area - important for calculations. in theory it should be the same pre- and post-NTZ.
+# Distance from each cell to each ramp (matrix)
+# Assuming `distCP` has same row order as `water`
+cell_dist <- distCP
+saveRDS(cell_dist, "data/output_data/04_B_shore_rec_cell_dist.rds")
 
+CP_U_array <- array(0, dim = c(ncells, ncarparks, 12, nyears),
+                    dimnames = list(cell_id = all_cell_ids,
+                                    ramp = carparks,
+                                    month = 1:12,
+                                    year = as.character(years)))
 
-# pre-SZ
-
-CP_U_pre18 <- as.data.frame(matrix(0, nrow = NCELL, ncol = length(unique(CP$area)))) # Set up data frame to hold utilities of cells
-colnames(CP_U_pre18) <- c(CP$area)
-
-cellU <- matrix(NA, ncol = length(unique(CP$area)), nrow = NCELL)
-
-for(ACCESS in 1:length(unique(CP$area))){
-  for(cell in 1:NCELL){
-    U <- exp(Vj_pre18[cell, ACCESS] + log(Vj_pre18[cell, area_col]))
-    U <- ifelse(is.na(U), 0, U) # many cells are NA, so the calculation above will return NA. Replace them with 0 so the line below works.
-    cellU[cell, ACCESS] <- U
-  }
-} # this loop goes over each cell for each ramp, and calculates how catchable each cell is based on how close it is to a access point and how popular that access point is.
-
-rowU <- as.data.frame(colSums(cellU))
-
-for(ACCESS in 1:length(unique(CP$area))){
-  for(cell in 1:NCELL_pre18){
-    CP_U_pre18[cell, ACCESS] <- (exp(Vj_pre18[cell, ACCESS]+log(Vj_pre18[cell, area_col])))/rowU[ACCESS, 1]
-  }
-} # this loop goes over each cell for each ramp, and calculates how catchable (in %) each cell is based on how close it is to a access point and how popular that boat ramp is.
-colSums(CP_U_pre18, na.rm = T) # all adds up to 1, perfect.
-head(CP_U_pre18)
-
-# Plot check
-CP_U_pre18 <- bind_cols(ID = water_shore$ID, CP_U_pre18)
-water_catch <- water_shore %>% mutate(ID = shore_cells) %>% left_join(CP_U_pre18, by = "ID")
-water_catch_long <- water_catch %>% pivot_longer(cols = CP$area, names_to = "access_point", values_to = "Catchability")
-ggplot(water_catch_long %>% filter(access_point %in% unique(water_catch_long$access_point)[51:52])) + 
-  geom_sf(aes(fill = log(Catchability)), color = NA) + 
-  scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ access_point, ncol = 16) + 
-  labs(title = "(before 2018) catchability of each cell, by shore access distance and cell size", fill = "log(Catchability)")
-ggsave("plots/checking_plots_during_setup/04B_shore_rec_catchability_surface_before2018.png", plot = last_plot())
-
-# post-SZ
-dim(Vj_post18)
-CP_U_post18 <- as.data.frame(matrix(0, nrow = NCELL_post18, ncol = length(unique(CP$area)))) #Set up data frame to hold utilities of cells
-colnames(CP_U_post18) <- c(CP$area)
-
-cellU <- matrix(NA, ncol = length(unique(CP$area)), nrow = NCELL_post18)
-
-for(ACCESS in 1:length(unique(CP$area))){
-  for (CELL in 1:NCELL_post18){
-      U <- exp(Vj_post18[CELL, ACCESS] + log(Vj_post18[CELL, area_col]))
-      U <- ifelse(is.na(U), 0, U)
-      cellU[CELL, ACCESS] <- U
-  }
-} # this loop goes over each cell for each ramp after the NTZ is in place, and calculates how catchable each cell is based on how close it is to a carpark
-
-rowU <- as.data.frame(colSums(cellU))
-
-for (ACCESS in 1:length(unique(CP$area))){
-  for (CELL in 1:NCELL_post18){
-      CP_U_post18[CELL, ACCESS] <- (exp(Vj_post18[CELL, ACCESS] + log(Vj_post18[CELL, area_col])))/rowU[ACCESS, 1]
+for (YEAR in seq_along(years)) {
+  yr <- years[YEAR]
+  
+  fishable_depth <- fishable_long %>%
+    filter(year == yr) %>%
+    #rename(fishable_prop = fshbl_p) %>%  # fshbl_p = fishable_prop (saving a file earlier as .shp shortens colnames)
+    dplyr::select(ID, fishable_prop)
+  
+  Vj_df <- cell_dist %>%
+    inner_join(fishable_depth, by = "ID") %>%
+    arrange(ID)
+  
+  row_ids <- match(Vj_df$ID, cell_ids)
+  
+  for (MONTH in 1:12) { # because each month's catchability can change (temporal closures etc.), get the correct one
+    
+    cell_area <- water_q[, MONTH, YEAR]
+    U_mat <- matrix(0, nrow = nrow(Vj_df), ncol = ncarparks) # cells x ramps
+    
+    for (ACCESS in seq_along(carparks)) {
+      carpark_name <- carparks[ACCESS]
+      U_mat[, ACCESS] <- exp(-Vj_df[[carpark_name]]) * cell_area * Vj_df$fishable_prop # exp(-Vj_df...) because otherwise high utility is given to areas far from ramps
     }
-  } # this loop goes over each cell for each ramp, and calculates how catchable (in %) each cell is based on how close it is to a access point and how popular that boat ramp is.
-colSums(CP_U_post18, na.rm = T) # all adds up to 1, perfect.
-head(CP_U_post18)
+    
+    carpark_sums <- colSums(U_mat, na.rm = TRUE)
+    U_norm <- sweep(U_mat, 2, carpark_sums, "/")
+    
+    CP_U_array[row_ids, , MONTH, YEAR] <- U_norm
+    
+  }
+} # this loop calculates how useful a cell is to fishing, based on its area (the bigger, the more useful), its distance to ramps (the closer, the more useful), and its fishable depth status (if within fishable depth that year, useful)
 
 
-# Plot check 
-non_ntz_cells <- setdiff(shore_cells, ntz_shore_cells)
-CP_U_post18 <- bind_cols(ID = non_ntz_cells, CP_U_post18)
-water_catch <- water_shore[water_shore$ID %in% non_ntz_cells,] %>% left_join(CP_U_post18, by = "ID")
-water_catch_long <- water_catch %>% pivot_longer(cols = CP$area, names_to = "access_point", values_to = "Catchability")
-ggplot(water_catch_long %>% filter(access_point %in% unique(water_catch_long$access_point)[c(51:52)])) + 
+plot(CP_U_array[row_ids,,,70])
+head(CP_U_array[row_ids,,,70])
+head(water)
+
+# plot check
+cp_slice <- CP_U_array[,,1,1]
+summary(cp_slice[!is.na(cp_slice)])
+row_sums <- rowSums(!is.na(cp_slice)) # calculate row sums (sum of utilities across ramps for each cell)
+water$utility_sum <- row_sums # add the sums as a new column to the water sf object
+ggplot(water) +
+  geom_sf(aes(fill = utility_sum), color = NA) +
+  scale_fill_viridis_c(option = "plasma", trans = "log10", 
+                       na.value = "grey80", name = "Sum of Utilities") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+
+# plot check DOESNT WOTK FSR
+carpark_check <- which(CP$area == "Mandurah_5")
+utility_check <- data.frame(CP_U_array[, carpark_check, 1, ])  # dimensions: cells × ramp x month x years
+names(utility_check) <- year_start:year_end
+utility_check$ID <- water$ID#[water$type %in% c("shore_north", "shore_north_cockburn_warnbro", "shore_wadandi")]
+head(utility_check)
+water_catch <- water %>% left_join(utility_check, by = "ID")
+
+water_catch_long <- water_catch %>% pivot_longer(cols = as.character(years), names_to = "year", values_to = "Catchability")
+plot(water_catch_long$Catchability)
+ggplot(water_catch_long %>% dplyr::filter(year %in% c(1950:1969))) + 
   geom_sf(aes(fill = log(Catchability)), color = NA) + 
-  scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ access_point, ncol = 16) + 
-  labs(title = "(after 2018) catchability of each cell, by shore access distance and cell size", fill = "log(Catchability)")
-ggsave("plots/checking_plots_during_setup/04B_shore_rec_catchability_surface_after2018.png", plot = last_plot())
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  facet_wrap(~ year, ncol = 10) + 
+  labs(title = paste0("commercial catchability of each cell, \nby distance from ", carpark_check, " ramp, cell size and tech-fishability"), fill = "log(Catchability)")
+ggsave("plots/checking_plots_during_setup/04_A_commercial_boat_ramp_catchability_over_time.png", plot = last_plot())
+
+# Plot check DOESNT WORK
+utility_check2 <- as.data.frame(CP_U_array[,,80]) %>% mutate(ID = as.numeric(rownames(CP_U_array[,,80])))
+class(utility_check2$ID)
+water_catch <- water %>% left_join(utility_check2, by = "ID")
+water_catch_long <- water_catch %>% pivot_longer(cols = CP$area, names_to = "carpark", values_to = "Catchability")
+
+ggplot(water_catch_long) + 
+  geom_sf(aes(fill = log(Catchability)), color = NA) + 
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  facet_wrap(~ carpark, ncol = 8) + 
+  labs(title = "Catchability of each cell in year 80, by boat ramp distance and cell size", fill = "log(Catchability)")
+ggsave("plots/checking_plots_during_setup/04_A_commercial_catchability_surface_by_ramp.png", plot = last_plot())
 
 
 ## 5. Allocating effort to cells ----------------------------------------------
@@ -473,9 +569,9 @@ CP_trips <- shore_effort_df %>% # This is just the trips from each carpark
   arrange(year, month) %>% 
   mutate(num_year = match(year, sort(unique(year)))) %>% # This is to number the years 1 to 80 for the loop.
   glimpse()
-saveRDS(CP_trips, "data/output_data/04B_CP_trips.rds")
-
-CP_trips2 <- CP_trips %>%
+saveRDS(CP_trips, "data/output_data/04_B_CP_trips.rds")
+#CP_trips <- readRDS("data/output_data/04_B_CP_trips.rds")
+CP_trips <- CP_trips %>%
   dplyr::select(num_year, month, carpark, adjusted_effort) %>%
   pivot_wider(
     names_from = carpark,
@@ -487,7 +583,7 @@ CP_trips2 <- CP_trips %>%
 ggplot(shore_effort_df %>% filter(CP_index %in% c(1:30)), aes(x=year, y=adjusted_effort)) +
   geom_line(color = colour_palette[5]) +
   facet_wrap(~carpark, ncol = 5)
-ggsave("plots/checking_plots_during_setup/04B_shore_rec_effort_over_time_by_carpark.png", plot = last_plot())
+ggsave("plots/checking_plots_during_setup/04_B_shore_rec_effort_over_time_by_carpark.png", plot = last_plot())
 
 # link the carparks to their cells
 cell_access_pairs <- water_dist_long %>%
@@ -497,229 +593,124 @@ cell_access_pairs <- water_dist_long %>%
   glimpse()
 
 
-# pre
 
-# Unique shore cell IDs
-cell_ids <- sort(unique(water$ID[water$ID %in% shore_cells]))
-NCELL <- length(cell_ids)
 
-# Map actual cell ID to array index
-rownames(CP_U_pre18) <- water_shore$ID
-cp_u_cell_ids <- rownames(CP_U_pre18)
-cell_id_to_index <- setNames(seq_along(cp_u_cell_ids), cp_u_cell_ids)
+s_fishing <- array(0, dim = c(NCELL, 12, length(years))) # this array has a row for every cell, a column for every month, and a layer for every year
+months <- array(0, dim = c(NCELL, 12)) # array for the number of months
+carparks <- array(0, dim = c(NCELL, length(CP$area))) # array for the number of ramps
 
-s_fishing_pre18 <- array(0, dim = c(NCELL, 12, n_years_pre18))
-for (YEAR in 1:n_years_pre18) {
-  print(paste("Processing year", YEAR))
+head(CP_trips)
+head(CP)
+head(CP_U_array[,,1,1])
+CP_U_array[is.na(CP_U_array)] <- 0
+
+shore_cells <- water$type %in% c(
+  "shore_north",
+  "shore_wadandi"
+)
+for(YEAR in 1:length(years)){
   
-  for (MONTH in 1:12) {
+  print(YEAR)
+  
+  temp <- CP_trips %>% 
+    filter(num_year == YEAR) %>% 
+    dplyr::select(-c(num_year, month))
+  temp <- as.matrix(temp)
+      
+  for(MONTH in 1:12){
     
-    # for each carpark
-    for (ACCESS in 1:length(CP$area)) {
-      
-      carpark_name <- CP$area[ACCESS]
+      #carparks[,] <- 0
 
-      # fet the effort for this carpark in this year/month
-      effort <- CP_trips %>%
-        filter(num_year == YEAR, month == MONTH, carpark == carpark_name) %>%
-        pull(adjusted_effort)
+    for(CARPARK in 1:length(CP$area)){
       
-      if (length(effort) == 0 || is.na(effort)) next
-
-      # find cells linked to this carpark
-      linked_cells <- cell_access_pairs %>%
-        filter(access == carpark_name) %>%
-        pull(ID)
+      carparks[, CARPARK] <- CP_U_array[, CARPARK, MONTH, YEAR] * temp[MONTH, CARPARK]
       
-      # assign effort to each linked cell
-      for (cell_id in linked_cells) {
-        
-        cell_index <- cell_id_to_index[as.character(cell_id)]
-        utility <- CP_U_pre18[as.character(cell_id), carpark_name]
-        
-        if (is.na(utility)) next
-        
-        s_fishing_pre18[cell_index, MONTH, YEAR] <- s_fishing_pre18[cell_index, MONTH, YEAR] + (utility * effort)
-      }
     }
-  }
-} # this loop assigns fishing effort to cells according to their utility.
-
-summary(s_fishing_pre18[,,1])
-
-# plot check
-year_idx <- 30  # choose the year to plot
-current_year <- 1944 + sort(unique(CP_trips2$num_year))[year_idx]  # 1944 + year 1 (1945) = 1945
-current_month <- 1 # choose the month to plot
-built_CPs <- CP %>% filter(year_strt < current_year | (year_strt == current_year & build_mnth <= current_month));st_crs(built_CPs) <- 4326 # filter CPs that are already built
-effort_vec <- s_fishing_pre18[, 1, year_idx] # extract that year&month's effort as a vector (one value per cell)
-water$effort[water$ID %in% shore_cells] <- effort_vec # add that effort to the grid
-
-ggplot(water) +
-  geom_sf(aes(fill = log(effort)), col = "lightgray") +
-  geom_sf(data = built_CPs, color = "red", size = 0.5) +  # only plot active carparks
-  scale_fill_gradientn(colours = c("blue", "blue"), na.value = NA) +
-  labs(title = paste("Shore fishing effort check - Year", current_year, "Month", current_month),
-       fill = "log Effort") +
-  theme_minimal()
-
-
-# post
-# Unique shore cell IDs
-ntz_shore_cells
-cell_ids <- sort(unique(water$ID[water$ID %in% shore_cells & !water$ID %in% ntz_shore_cells ]))
-NCELL <- length(cell_ids)
-
-# Map actual cell ID to array index
-rownames(CP_U_post18) <- water_shore$ID[water_shore$status != c("NTZ_for_shore_and_boat")]
-cp_u_cell_ids <- rownames(CP_U_post18)
-cell_id_to_index <- setNames(seq_along(cp_u_cell_ids), cp_u_cell_ids)
-s_fishing_post18 <- array(0, dim = c(NCELL, 12, n_years_tot - n_years_pre18))
-layer <- 1
-
-for (year_index in 1:(n_years_tot - n_years_pre18)) {
-  YEAR <- n_years_pre18 + year_index
-  print(paste("Processing year", YEAR))
-  
-  for (MONTH in 1:12) {
     
-    # for each carpark
-    for (ACCESS in 1:length(CP$area)) {
-      
-      carpark_name <- CP$area[ACCESS]
-      
-      # get the effort for this carpark in this year/month
-      effort <- CP_trips %>%
-        filter(num_year == YEAR, month == MONTH, carpark == carpark_name) %>%
-        pull(adjusted_effort)
-      
-      if (length(effort) == 0 || is.na(effort)) next
-      
-      # find cells linked to this carpark
-      linked_cells <- cell_access_pairs %>%
-        filter(access == carpark_name) %>%
-        pull(ID)
-      
-      # assign effort to each linked cell
-      for (cell_id in linked_cells) {
-        
-        cell_index <- cell_id_to_index[as.character(cell_id)]
-        utility <- CP_U_post18[as.character(cell_id), carpark_name]
-        
-        if (is.na(utility)) next
-        
-        s_fishing_post18[cell_index, MONTH, year_index] <- s_fishing_post18[cell_index, MONTH, year_index] + (utility * effort)
-      }
-    }
+    months[, MONTH] <- rowSums(carparks, na.rm = TRUE)
+    
   }
-}
+  s_fishing[ , , YEAR] <- months
+} # this loop assigns each cell a fishing effort based on utility by month
+s_fishing
 
-glimpse(s_fishing_post18[,,1])
-
-# add NTZ cells back in
-shore_cells
-ntz_shore_cells
-# Initialize full array with all shore cells (including NTZ)
-s_fishing_post18_full <- array(0, dim = c(length(shore_cells), 12, n_years_tot - n_years_pre18))
-
-# Create a mapping from cell ID to its index in shore_cells
-shore_index_map <- setNames(seq_along(shore_cells), shore_cells)
-
-# Create a mapping from the cell ID to its index in the reduced (non-NTZ) array
-non_ntz_cells <- setdiff(shore_cells, ntz_shore_cells)
-non_ntz_index_map <- setNames(seq_along(non_ntz_cells), non_ntz_cells)
-
-# Copy existing values into the correct positions in the full array
-for (i in seq_along(non_ntz_cells)) {
-  cell_id <- non_ntz_cells[i]
-  full_index <- shore_index_map[as.character(cell_id)]
-  reduced_index <- non_ntz_index_map[as.character(cell_id)]
-  
-  s_fishing_post18_full[full_index, , ] <- s_fishing_post18[reduced_index, , ]
-}
+summary(s_fishing[,,1])
 
 
 # plot check
-year_idx <- 1  # choose the year to plot
-current_year <- 2018 + sort(unique(CP_trips2$num_year))[year_idx]  # 2018 + year 1 (2019) = 2019
+year_idx <- 125  # choose the year to plot
+current_year <- year_start-1 + sort(unique(CP_trips$num_year))[year_idx]
 current_month <- 1 # choose the month to plot
-built_CPs <- CP %>% filter(year_strt < current_year | (year_strt == current_year & build_mnth <= current_month));st_crs(built_CPs) <- 4326 # filter CPs that are already built
-effort_vec <- s_fishing_post18_full[, 1, year_idx] # extract that year&month's effort as a vector (one value per cell)
-water$effort[water$ID %in% shore_cells] <- effort_vec # add that effort to the grid
+built_CPs <- CP %>% filter(year_strt <= current_year);built_CPs <- st_transform(built_CPs, 4326) # filter CPs that are already built
+effort_vec <- s_fishing[, 1, year_idx] # extract that year&month's effort as a vector (one value per cell)
+water$effort <- effort_vec # add that effort to the grid
 
 ggplot(water) +
-  geom_sf(aes(fill = log(effort)), col = "lightgray") +
-  geom_sf(data = built_CPs, color = "red", size = 0.5) +  # only plot active carparks
-  scale_fill_gradientn(colours = c("blue", "blue"), na.value = NA) +
+  geom_sf(aes(fill = (effort)), col = NA) +
+  #geom_sf(data = built_CPs, color = "red", size = 0.5) +  # only plot active carparks
+  scale_fill_gradientn(colours = c("blue", "red"), na.value = NA) +
   labs(title = paste("Shore fishing effort check - Year", current_year, "Month", current_month),
        fill = "log Effort") +
   theme_minimal()
-
-
-# merge pre- and post- effort distributions.
-glimpse(s_fishing_pre18)
-glimpse(s_fishing_post18_full)
-
-s_fishing <- abind(s_fishing_pre18, s_fishing_post18_full, along = 3)
-dimnames(s_fishing)[[1]] <- shore_cells # now the rownames are the cells' ID
-
-s_fishing[,,80]
 
 
 ## X. Make a GIF --------------------------------------------------------------
 
 library(gifski)
 
+
 frame_count <- 1
-m <- 12 # month to plot - using december because it's the highest
 
 # make the plot's colour limits otherwise log(0) wouldnt work in the plot
 log_effort_all <- log(s_fishing[s_fishing > 0]) # to avoid -Inf as a limit in the plot which wouldn't work
 global_limits <- range(log_effort_all, na.rm = TRUE)
 
 for (y in seq_along(years)) {
-  
-  # Update water$effort for this year and month
-  #water$effort[water$type == "shore"] <- s_fishing[, 1, y]
-  effort_this_year <- s_fishing[, m, y]
-  names(effort_this_year) <- dimnames(s_fishing)[[1]]  # make sure these are character IDs
-  water$effort[water$ID %in% shore_cells] <- effort_this_year
-  
-  # Year and month labels
   year_idx <- years[y]
-  month_idx <- m
-
-  # Plot
-  p <- ggplot() +
-    geom_sf(data = land, fill = "lightgray", col = NA) +
-    geom_sf(data = ntz, fill = "#E4F2FF", col = NA) +
-    geom_sf(data = water, aes(fill = log(effort)), color = NA) +
-    scale_fill_gradientn(colours = colour_palette[6:4], na.value = NA, 
-                         limits = global_limits) +
+  print(y)
+  for (m in 1:12) {
+    month_idx <- m
+    
+    # update effort for this year & month
+    water$effort <- s_fishing[, m, y]
+    
+    p <- ggplot(water) +
+      geom_sf(aes(fill = log(effort)), colour = NA) +
+      scale_fill_gradientn(
+        colours = colour_palette[6:4],
+        limits  = global_limits,
+        oob     = scales::squish,  # very important
+        na.value = NA
+      )
     labs(
-      title = paste("Fishing Effort - Year", year_idx, "Month", month_idx),
+      title = paste("shore fishing Effort – Year", year_idx, "Month", month_idx),
       fill = "log Effort"
     ) +
-    theme_minimal()
-  
-  # Save frame
-  ggsave(
-    filename = sprintf("plots/gif_frames/shore_effort_frame_%03d.png", frame_count),
-    plot = p,
-    width = 6, height = 6, dpi = 150
-  )
-  
-  frame_count <- frame_count + 1
+      theme_minimal()
+    
+    ggsave(
+      filename = sprintf(
+        "plots/gif_frames/04_B_shore_fishing_setup_gif_frames/shore_effort_frame_%03d.png",
+        frame_count
+      ),
+      plot = p,
+      width = 6,
+      height = 6,
+      dpi = 150
+    )
+    
+    frame_count <- frame_count + 1
+  }
 }
 
 # stitch the GIF frames together
-png_files <- list.files("plots/gif_frames", pattern = "shore_effort_frame_\\d+\\.png", full.names = TRUE)
+png_files <- list.files("plots/gif_frames/04_B_shore_fishing_setup_gif_frames", pattern = "shore_effort_frame_\\d+\\.png", full.names = TRUE)
 gifski(
   png_files,
-  gif_file = "plots/gifs/shore_fishing_effort_over_time.gif",
+  gif_file = "plots/gifs/commercial_fishing_effort_over_time.gif",
   width = 600,
   height = 600,
-  delay = 0.25  # seconds per frame (adjust as needed)
+  delay = 0.05  # seconds per frame (adjust as needed)
 )
 
 ## Set up effort for burn-in --------------------------------------------------
