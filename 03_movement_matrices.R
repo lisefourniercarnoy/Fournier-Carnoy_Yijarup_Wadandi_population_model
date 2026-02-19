@@ -51,7 +51,7 @@ water <- readRDS(file_water) %>%
   st_make_valid()
 
 ggplot(water) +
-  geom_sf(aes(fill = status), colour = NA) +
+  geom_sf(aes(fill = SC_status), colour = NA) +
   theme_void() +
   scale_fill_manual(values=c(colour_palette[4], colour_palette[6], colour_palette[5], colour_palette[1]))
 
