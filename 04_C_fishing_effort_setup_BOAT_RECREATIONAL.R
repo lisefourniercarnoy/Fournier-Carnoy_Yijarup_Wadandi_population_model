@@ -25,6 +25,7 @@ rm(list = ls())
 library(tidyverse)
 library(sf)
 library(raster)
+library(terra)
 library(stringr)
 library(forcats)
 library(RColorBrewer)
@@ -39,12 +40,14 @@ library(exactextractr)
 colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 source("custom_theme.R")
 
+
 ## 0. Files used in this script -----------------------------------------------
 
-file_wa         <- "data/output_data/01_wadandi_land.shp"
-file_ntz        <- "data/output_data/01_wadandi_NTZ.shp"
+file_wa         <- "data/output_data/01_B_land.shp"
+file_ntz        <- "data/output_data/Q_NTZ_manual_clean_01_B.shp"
 file_bathy      <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
-file_boat_ramps <- "data/input_data/wadandi_boat_ramps.shp"
+file_boat_ramps_w <- "data/input_data/wadandi_boat_ramps.shp"
+file_boat_ramps_n <- "data/input_data/north_boat_ramps.shp"
 file_water      <- "data/output_data/03_water.rds"
 file_network    <- "data/output_data/03_network_shapefile.shp"
 
@@ -52,7 +55,7 @@ file_network    <- "data/output_data/03_network_shapefile.shp"
 land <- st_read(file_wa); plot(land$geometry)
 ntz <- st_read(file_ntz); plot(ntz$geometry, add = T)
 
-year_start <- 1945
+year_start <- 1900
 year_end <- 2024
 n_years_tot <- year_end - year_start +1
 n_years_pre18 <- 2018 - year_start
@@ -60,99 +63,195 @@ n_years_pre18 <- 2018 - year_start
 crs_raster <- "+proj=longlat +datum=WGS84 +no_defs"
 bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -33.2), crs = crs_raster)
 
+
 ## 1. Catchability ------------------------------------------------------------
 
-water <- readRDS(file_water) %>% filter(!is.na(ID)); plot(water)
-no_take_list <- list(water$ID[water$status %in% c('NTZ_boat_shore', 'NTZ_boat')]) # List of all the cells that are No-Take for boats
+## catchability is the proportion of available fish in a population that would be captured by a unit of effort. (van Oostenbrugge et al. 2008)
+## in a grid, each cell has a portion of the catchability of the whole grid, which we need to calculate.
+## in this section (1.) we calculate the fishable area of the cells in each time step (1.a), then divide it by the fishable area of the whole grid at each time step (1.b)
+## which gives us each the portion of Catchability of each cell.
+## because the area that is catchable changes (with spatial and temporal restrictions), we have to calculate the grid's catchability for each month of each year.
 
-# We'll calculate the catchability of each cell by its area and whether it's no-take or not.
-water <- water %>% 
-  mutate(Area = as.vector((water$cell_area)/1000000))
 
-# Cells that are in NTZs will have catchability of 0 after designation (2018)
-water_area <- water %>% 
-  dplyr::select(status, Area) %>% 
-  mutate(area_2000 = Area,
-         area_2018 = ifelse(status %in% c('NTZ_boat_shore', 'NTZ_boat'), 0, Area)) %>%
-  dplyr::select(area_2000, area_2018) %>% 
-  mutate(sum_2000 = sum(area_2000),
-         sum_2018 = sum(area_2018)) %>% 
-  st_drop_geometry() %>% 
-  mutate(q_2000 = area_2000/sum_2000,
-         q_2018 = area_2018/sum_2018) %>% 
-  mutate(ID = row_number())
+### 1.a. find the fishable area of each cell in each time step ----------------
 
-# Create an array of catchability for each cell (rows) and each year (columns)
+water <- readRDS(file_water) %>% filter(!is.na(ID))
 NCELL <- nrow(water)
-spatial_q <- array(0.000006, dim = c(NCELL, n_years_tot)) # Why is the original catchability set to 0.000006 ?
 
-# The following bit is for changing catchability after NTZ implementation.
-for (COL in (n_years_pre18+1):n_years_tot) { # 2018 is year number 38
-  spatial_q[, COL] <- spatial_q[, COL-1] * 1.02
-} # This increases post-2018 cells by 2% each year?? if the min size increases surely catchability decreases?
+# identify the important cells
+temporal_cells <- water$ID[water$TC_status == TRUE]
 
-# Change catchability of cells pre-SZ
-for (COL in 1:n_years_pre18) { # 2017 is year number 37, and the last year with fishing before NTZs
-  for (ROW in 1:NCELL){
-    spatial_q[ROW, COL] <- spatial_q[ROW, COL] / water_area[ROW, 5]
+# setup the arrays to calculate things.
+water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x months x years
+water_area[, 1:12, 1] <- water$cell_area # for all months of the first year, the catchable area is the cell's area.
+
+# the loop goes as follows: for each time step, 
+# check whether there's a spatial restriction that year, if so the fishable area is 0
+# then, if the cell has a temporal closure, restrict fishable area as needed.
+for (YEAR in 1:dim(water_area)[3]) {
+  
+  current_year <- year_start + YEAR - 1
+  
+  for (MONTH in 1:dim(water_area)[2]) {
+    
+    # spatial closures
+    restriction_dates <- as.numeric(substr(water$SC_restriction_date, 7, 10))
+    water_area[, MONTH, YEAR] <- water$cell_area
+    
+    restricted_cells <- which(
+      !is.na(water$boat_rec) & water$boat_rec == FALSE & # where fleet is not allowed,
+        !is.na(restriction_dates) & current_year >= restriction_dates # and when SC is in place...
+    )
+    water_area[restricted_cells, MONTH, YEAR] <- 0 # ...the cell is not fishable
+        
+    # temporal closures
+    for (CELL in temporal_cells) {
+      
+      # find the relevant temporal restrictions
+      TC_years_list <- water$TC_restriction_date[[CELL]] # years the closure has changed
+      TC_months_list <- water$TC_restriction_months[[CELL]] # months restricted
+      TC_perc_list <- water$TC_restriction_perc_fished[[CELL]] # how much they are restricted
+      
+      current_TC <- which(TC_years_list <= current_year) # only select the temporal closures that exist at the current point
+      
+      if (length(current_TC) > 0) { # if there are temporal restrictions at this YEAR, restrict the fishable area accordingly
+        current_TC <- max(current_TC)
+        
+        TC_months_current <- as.integer(strsplit(TC_months_list[current_TC], "-")[[1]])
+        TC_perc_current   <- as.numeric(strsplit(TC_perc_list[current_TC], "-")[[1]])
+        
+        if (MONTH %in% TC_months_current) {
+          month_idx <- match(MONTH, TC_months_current)
+          water_area[CELL, MONTH, YEAR] <- water_area[CELL, MONTH, YEAR] * TC_perc_current[month_idx]
+        }
+      }
+    }    
   }
-} # For all cells pre-SZ, catchability is in proportion to the cell's area.
+} # this loop calculates for every month and every year, the fishable area of each cell.
 
-for (COL in (n_years_pre18+1):n_years_tot) { # +1 because n_years_pre18 relates to 2017
-  for (ROW in 1:NCELL){
-    spatial_q[ROW, COL] <- spatial_q[ROW, COL] / water_area[ROW, 6]
+### sanity check station
+
+test_cell <- 50
+test_month <- 10
+test_year <- 101
+
+# reference cell numbers as of 13.01.2026:
+## cockburn sound cell (temporal closure): 1
+## SWC NTZ cell: 200
+## random fished cell: 1000
+
+# restrictions in this cell should be:
+glimpse(st_drop_geometry(water[test_cell, c("TC_status", "SC_status", "boat_rec", "SC_restriction_date", "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished")]))
+
+# check that it is correct
+cat("In month", test_month, "of year", (year_start+test_year-1),
+    ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable", "NOT fishable"), "for recreational boats.", "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
+
+
+### 1.b. divide the fishable area by the grid sum area ------------------------
+
+water_q <- array(0.000006, dim = c(NCELL, 12, (year_end-year_start+1)))
+
+for (YEAR in 1:dim(water_q)[3]) {
+  for (MONTH in 1:dim(water_q)[2]) {
+    
+    water_q[, MONTH, YEAR] <- water_area[, MONTH, YEAR] / sum(water_area[1:dim(water_q)[2]])
   }
-} # For all cells post-SZ, catchability is in proportion to the cell's area. (Cells in NTZs are obviously zero)
+} # this loop calculates the catchability of each cell for every year, based on the fishable area at that period.
 
-spatial_q[spatial_q == Inf] <- 0 # IDK what this does.
-summary(spatial_q) # this is a matrix that tells us for each cell (each row), and each year (each column), how likely you'd catch a fish in that cell based on how big it is.
+summary(water_q)
 
-# Plot check
-catch_df <- as.data.frame(spatial_q)
-colnames(catch_df) <- paste0("Year_", year_start:(year_start + n_years_tot-1))
-catch_df$ID <- water_area$ID  # or just 1:NCELL if they match in order
+
+### sanity check station 
+
+test_cell <- 1
+test_month <- 10
+test_year <- 101
+
+# reference cell numbers as of 13.01.2026:
+## cockburn sound cell (temporal closure): 1
+## SWC NTZ cell: 200
+## random fished cell: 1000
+
+catch_df <- as.data.frame(water_q[, test_month, test_year])
+names(catch_df) <- "test_catchability"
+catch_df$ID <- water$ID
+
 water_catch <- water %>% left_join(catch_df, by = "ID")  # ID must be in 'water' too
-water$ID <- water_area$ID  # or use `row_number()`
-water_long <- water_catch %>% pivot_longer(cols = starts_with("Year_"), names_to = "Year", names_prefix = "Year_", values_to = "Catchability") %>% mutate(Year = as.numeric(Year))
-ggplot(water_long[water_long$Year %in% c(2000, 2020),]) +
-  geom_sf(aes(fill = log(Catchability)), color = NA) +
-  scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ Year, ncol = 2) +
-  labs(title = "Catchability over time (pre- and post- NTZ)", fill = "log(Catchability)")
-ggsave("plots/checking_plots_during_setup/04C_boat_rec_catchability_pre.post-NTZ.png", plot = last_plot())
 
-# Save for future use.
-saveRDS(spatial_q, file = paste0("data/output_data/04C_boat_rec_spatial_q_NTZ.rds"))
+ggplot(water_catch) +
+  geom_sf(aes(fill = test_catchability), color = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  labs(title = paste0("Catchability in ", (year_start+test_year-1), ", month ", test_month), fill = "Catchability") +
+  theme_minimal()
+
+ggsave("plots/checking_plots_during_setup/04_C_boat_rec_catchability_test_year.png", plot = last_plot(), height = 15, width = 5)
+
+## save for future use --------------------------------------------------------
+
+saveRDS(water_q, file = "data/output_data/04_C_boat_rec_spatial_q_NTZ.rds")
+water_q <- readRDS("data/output_data/04_C_boat_rec_spatial_q_NTZ.rds")
 
 
-## 2. Fishing effort ----------------------------------------------------------
+## 2. Fishing days -------------------------------------------------------------
 
-# Total boat days
-# Provide data from the literature (extrapolated with multipliers, see google sheets "YIJARUP - Fishing effort reconstruction")
-years <- c(1996, 2005, 2011, 2013, 2015, 2017, 2020); boat_days <- c(16058.9066, 22836.15173, 54233.00, 45722.00, 50069.00, 51843.00, 57521.00)
+# we need to know how much fishing occurs in the region, in order to distribute it in the grid.
+# for boat recreational fishing, we are using a variety of sources to reconstruct the trends (a),
+# the sources are split between the Metropolitan area effort (North, 2.N) and the Southwest area effort (Wadandi, 2.W)
+# we will (b.) split the yearly effort into months, then (c.) split the monthly effort into access points (boat ramps).
+
+
+### 2.a. enter the overall effort values (boat days) --------------------------
+
+# obtain boat days from the literature (see google slides on reconstruction)
+years     <- c(2011, 2013, 2015, 2017, 2020, 2023)
+boat_days <- c(279683, 235378, 254896, 302054, 308701, 215011)
+
 boat_days_lit <- data.frame(years, boat_days)
-plot(boat_days_lit$years, boat_days_lit$boat_days, type = "l", col = colour_palette[4], lwd = 4, main = "boat days in wadandi country from the literature")
 
-# Fit Logistic Growth Model and predict 1945-2024
-start_vals <- list(a = 60000, b = 0.2, c = 2005)
-logistic_model <- nls(
-  boat_days ~ a / (1 + exp(-b * (years - c))),
-  start = start_vals
-)
-predict_years <- year_start:year_end
-predicted_annual_days <- predict(logistic_model, newdata = data.frame(years = predict_years))
-years <- year_start:year_end
+plot(boat_days_lit$years, boat_days_lit$boat_days, 
+     pch = 19, col = colour_palette[4], xlim = c(year_start, year_end), ylim = c(0, max(boat_days_lit)), 
+     xlab = "Year", ylab = "Boat Days", main = "Original + Fake Boat Days")
 
-annual_effort_df <- data.frame(year = years, predicted_boat_days = predicted_annual_days)
+# fill in with fake values
+years     <- c(1900,1985)
+boat_days <- c(0,100000)
+boat_days_fake <- data.frame(years, boat_days)
 
-# check
-plot(annual_effort_df$year, annual_effort_df$predicted_boat_days, type = "l", col = colour_palette[5], lwd = 4,
-     main = "Boat Days in Wadandi Country \nfrom the Literature \n(with some extrapolation)", 
+points(boat_days_fake$years, boat_days_fake$boat_days, 
+       pch = 17, col = colour_palette[6])
+legend("topright", legend = c("Original Data", "Fake Data"), col = c(colour_palette[4], colour_palette[6]), pch = c(19, 17))
+
+
+# fill in the gaps to obtain values for every year
+years <- c(boat_days_lit$years, boat_days_fake$years)
+boat_days <- c(boat_days_lit$boat_days, boat_days_fake$boat_days)
+
+sorted_index <- order(years) # sort data in order (important for interpolation)
+all_years_sorted <- years[sorted_index]
+all_boat_days_sorted <- boat_days[sorted_index]
+
+years_full <- year_start:year_end
+# linear interpolation with extrapolation
+interp <- approx(x = all_years_sorted, y = all_boat_days_sorted, xout = years_full, method = "linear", rule = 2)
+annual_effort <- data.frame(year = interp$x, boat_days = interp$y)
+
+
+# sanity check station
+plot(annual_effort$year, annual_effort$boat_days*(2/3), type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
-lines(boat_days_lit$years, boat_days_lit$boat_days, col = colour_palette[4], lwd = 4)
-legend("topleft", legend = c("Observed", "Predicted (Logistic)"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
+lines(boat_days_lit$years, boat_days_lit$boat_days*(2/3), col = colour_palette[4], lwd = 4)
 
-# Bring in seasonal multipliers
+lines(annual_effort$year[1:110], annual_effort$boat_days[1:110]*(1/3), col = colour_palette[5], lwd = 4, lty = "dashed")
+lines(boat_days_lit$years, boat_days_lit$boat_days*(1/3), col = colour_palette[4], lwd = 4, lty = "dashed")
+
+
+legend("topleft", legend = c("From literature", "Fake"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
+
+
+### 2.b. split yearly fishing effort by month ---------------------------------
+
+# obtain the monthly distribution of fishing from the literature
 seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022
   "01" = 0.14, "02" = 0.081, "03" = 0.097, "04" = 0.081,
   "05" = 0.033, "06" = 0.033, "07" = 0.033, "08" = 0.033,
@@ -161,69 +260,70 @@ seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022
 seasonal_multipliers <- seasonal_multipliers / sum(seasonal_multipliers) # standardise so it adds up to 1
 barplot(seasonal_multipliers, col = colour_palette[6], main = "distribution of yearly \nboat fishing effort by month in % \n(deduced from Ryan et al. 2022, fig. 21c)")
 
-# Add monthly distribution back to the timeseries
+# add monthly distribution back to the timeseries
 boat_effort <- expand.grid(
-  year = predict_years,
+  year = years_full,
   month = sprintf("%02d", 1:12)
 ) %>%
   arrange(year, month) %>%
   mutate(
-    annual_boat_days = rep(predicted_annual_days, each = 12),
+    annual_boat_days = rep(annual_effort$boat_days, each = 12),
     monthly_effort = annual_boat_days * seasonal_multipliers[month]
   ) %>%
   dplyr::select(year, month, monthly_effort)
 
-# check
+# sanity check station
 ggplot(boat_effort, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
   geom_line(color = colour_palette[4]) +
-  labs(title = "Monthly Boat Fishing Effort (1945–2024)",
+  labs(title = paste0("Monthly Commercial Fishing Effort ", year_start, "-", year_end),
        x = "Date", y = "Monthly Boat Days") +
   theme_minimal() +
   geom_smooth(color = colour_palette[5])
 
-saveRDS(boat_effort, "data/output_data/04C_boat_rec_total_boat_days.rds")
-
 
 # Proportion of each month's contribution to yearly boat days
-boat_month_prop <- boat_effort %>% 
-  group_by(year) %>% 
-  mutate(year_sum = sum(monthly_effort)) %>%
-  mutate(month_prop = monthly_effort/year_sum) %>% 
+boat_month_prop <- boat_effort %>%
+  group_by(year) %>%
+  mutate(year_sum = sum(monthly_effort),
+         month_prop = monthly_effort/year_sum) %>%
   dplyr::select(-year_sum)
 
-boat_month_prop <- boat_month_prop %>% 
-  group_by(month) %>% 
+boat_month_prop <- boat_month_prop %>%
+  group_by(month) %>%
   mutate(ave_month_prop = mean(month_prop))
 prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
 plot(prop_month_ave)
-saveRDS(prop_month_ave, "data/output_data/04_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
+saveRDS(prop_month_ave, "data/output_data/04_C_boat_rec_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
-# effort by boat_ramp
 
-BR <- st_read(file_boat_ramps) %>% 
+### 2.N. (North) distribute monthly effort into boat ramps --------------------
+
+BR_n <- st_read(file_boat_ramps_n) %>% 
   st_transform(4283) %>%
   st_make_valid() %>%
-  mutate(visit_2024 = ifelse(is.na(visit_2024), mean(visit_2024, na.rm = T), visit_2024)) %>%  # TEMPORARY, just to have values of ramp visitation where DBCA didn't have them
-  #filter(!is.na(visit_2024)) %>% # remove ramps where there's no info on visitation (TEMPORARY, all should have data at some point)
-  mutate(build_year = as.numeric(build_year),
-         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
-         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
-         norm_popularity = visit_2024 / sum(visit_2024, na.rm = TRUE)) %>%
+  dplyr::filter(!is.na(name)) %>% 
+  mutate(build_year = 1900, # all ramps start in 1900 cuz some of the build years dont make sense
+         build_mnth = 1,     # assume Jan if unknown
+         norm_popularity = 1 / nrow(.)) %>% # assuming all ramps are visited the same amount
   glimpse()
-plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add = TRUE)
 
-# Distribute effort across all ramps, across time
-boat_effort <- boat_effort %>%
+plot(water$geometry); plot(BR_n$geometry, col = colour_palette[5], pch = 16, cex = 1, add = TRUE)
+
+# obtain 2/3rds of the boat days and distribute them in metro ramps
+boat_effort_n <- boat_effort %>% mutate(monthly_effort = monthly_effort * (2/3))
+
+# distribute effort across all ramps, across time
+boat_effort_n <- boat_effort_n %>%
   mutate(date = as.Date(paste(year, month, "01", sep = "-"))) # make a column with year and month of ramp build
-ramp_effort_df <- expand.grid(
-  ramp_index = 1:nrow(BR),
-  date = boat_effort$date
+ramp_effort_n <- expand.grid(
+  ramp_index = 1:nrow(BR_n),
+  date = boat_effort_n$date
 ) %>%
   mutate(
-    build_date = as.Date(paste(BR$build_year[ramp_index], BR$build_mnth[ramp_index], "01", sep = "-")),
-    norm_popularity = BR$norm_popularity[ramp_index],
-    ramp_name = BR$name[ramp_index]
+    build_date = as.Date(paste(BR_n$build_year[ramp_index], BR_n$build_mnth[ramp_index], "01", sep = "-")),
+    norm_popularity = BR_n$norm_popularity[ramp_index],
+    ramp_name = BR_n$name[ramp_index]
   ) %>%
   filter(date >= build_date) %>%
   mutate(
@@ -233,8 +333,8 @@ ramp_effort_df <- expand.grid(
   )
 
 # Merge in monthly effort
-ramp_effort_df <- ramp_effort_df %>%
-  left_join(boat_effort, by = "date") %>%
+ramp_effort_n <- ramp_effort_n %>%
+  left_join(boat_effort_n, by = "date") %>%
   group_by(date) %>%
   mutate(
     total_weight = sum(ramp_weight),
@@ -244,125 +344,122 @@ ramp_effort_df <- ramp_effort_df %>%
   ) %>%
   ungroup() %>%
   dplyr::select(year, month, boat_ramp = ramp_name, adjusted_effort)
-saveRDS(ramp_effort_df, "data/output_data/04C_boat_rec_ramp_effort.rds")
 
 # Check total per month equals monthly_effort
-check_totals <- ramp_effort_df %>%
+check_totals <- ramp_effort_n %>%
   group_by(year, month) %>%
   summarise(total_effort = sum(adjusted_effort), .groups = "drop") %>%
-  left_join(boat_effort %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
+  left_join(boat_effort_n %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
   mutate(diff = abs(total_effort - monthly_effort))
 summary(check_totals$diff)  # should be near zero
 
 # check each boat ramp is populated correctly
-ggplot(ramp_effort_df, aes(x=year, y=adjusted_effort)) +
-  geom_line(color = colour_palette[5]) +
-  facet_wrap(~boat_ramp, ncol = 3)
+ggplot(ramp_effort_n, aes(x=year, y=adjusted_effort)) +
+  geom_line(color = colour_palette[5], lwd = 1) +
+  facet_wrap(~boat_ramp, ncol = 2)
 
-# check that the sum of distributed effort is the same as the whole region's effort that we predicted earlier
-test_region_predicted_effort <- boat_effort %>% # the predicted boat effort, from bits of the literature
-  mutate(date = as.Date(paste(year, month, "01", sep = "-"))) %>%
-  dplyr::select(date, monthly_effort) %>%
-  rename(predicted_total = monthly_effort)
-test_all_ramp_effort <- ramp_effort_df %>% # each ramp's effort, summed back up (SHOULD BE EXACTLY LIKE THE PREDICTED EFFORT)
-  mutate(date = as.Date(paste(year, month, "01", sep = "-"))) %>%
+
+### 2.W. (Wadandi) distribute monthly effort into boat ramps ------------------
+
+# effort by boat_ramp (wadandi)
+BR_w <- st_read(file_boat_ramps_w) %>% 
+  st_transform(4283) %>%
+  st_make_valid() %>%
+  mutate(build_year = as.numeric(build_year),
+         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
+         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
+         norm_popularity = 1 / nrow(.)) %>% # assuming all ramps are visited the same amount
+  glimpse()
+
+# obtain 1/3rds of the boat days and distribute them in wadandi ramps
+boat_effort_w <- boat_effort %>% mutate(monthly_effort = monthly_effort * (2/3))
+
+# Distribute effort across all ramps, across time
+boat_effort_w <- boat_effort_w %>%
+  mutate(date = as.Date(paste(year, month, "01", sep = "-"))) # make a column with year and month of ramp build
+ramp_effort_w <- expand.grid(
+  ramp_index = 1:nrow(BR_w),
+  date = boat_effort_w$date
+) %>%
+  mutate(
+    build_date = as.Date(paste(BR_w$build_year[ramp_index], BR_w$build_mnth[ramp_index], "01", sep = "-")),
+    norm_popularity = BR_w$norm_popularity[ramp_index],
+    ramp_name = BR_w$name[ramp_index]
+  ) %>%
+  mutate(
+    months_since_build = interval(build_date, date) %/% months(1),
+    logistic_growth = 1 / (1 + exp(-0.1 * (months_since_build - 60))),
+    ramp_weight = norm_popularity * logistic_growth
+  )
+
+# Merge in monthly effort
+ramp_effort_w <- ramp_effort_w %>%
+  left_join(boat_effort_w, by = "date") %>%
   group_by(date) %>%
-  summarise(distributed_total = sum(adjusted_effort), .groups = "drop")
-ggplot() +
-  geom_line(data = test_region_predicted_effort, aes(x = date, y = predicted_total), color = colour_palette[4], lwd = 2) +
-  geom_line(data = test_all_ramp_effort, aes(x = date, y = distributed_total), color = colour_palette[5], linetype = "solid") +
-  labs(
-    title = "Predicted effort and ramps' effort should overlap.\nif not, the effort splitting by ramp (norm_popularity) is not working",
-    y = "Monthly Boat Days", x = "Date"
-  ) +
-  theme_minimal()
+  mutate(
+    total_weight = sum(ramp_weight),
+    adjusted_effort = ifelse(total_weight > 0, monthly_effort * (ramp_weight / total_weight), 0),
+    year = year(date),
+    month = month(date)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(year, month, boat_ramp = ramp_name, adjusted_effort)
+#saveRDS(ramp_effort_df, "data/output_data/04A_commercial_ramp_effort.rds")
+
+# Check total per month equals monthly_effort
+check_totals <- ramp_effort_w %>%
+  group_by(year, month) %>%
+  summarise(total_effort = sum(adjusted_effort), .groups = "drop") %>%
+  left_join(boat_effort_w %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
+  mutate(diff = abs(total_effort - monthly_effort))
+summary(check_totals$diff)  # should be near zero
+
+# check each boat ramp is populated correctly
+ggplot(ramp_effort_w, aes(x=year, y=adjusted_effort)) +
+  geom_line(color = colour_palette[5], lwd = 1) +
+  facet_wrap(~boat_ramp, ncol = 2)
 
 
 ## 3. "boats can fish further over time" --------------------------------------
 
+# this section of the fishing effort relates to boats being able to fish further over the years, with bigger boats, more powerful engines etc.
+# the model takes this into account by adding a 'fishable depth' into the mix, which goes more and more offshore.
+# for commercial fishing, we're assuming that on average, fishers can fish 1.3m more every year. (change as needed in parameters)
+
 # prepare grid cells
 plot(water$geometry)
 wa_mask <- st_read(file_wa); wa_mask <- st_transform(wa_mask, crs = crs_raster); wa_mask <- as(wa_mask, "Spatial"); plot(wa_mask, col = "lightgray", add = T)
+plot(bbox, add = T)
+
+# set parameters
+years <- year_start:year_end
+min_depth <- 20 # fishable depth is about 20m in 1945 (from Gaynor 2008, p.38)
+increase_year <- 1985 # the year that boats start to further (see Gaynor et al., talks about GPS and sounders)
+depth_per_year <- 1.5 # fishable depth gained per year (m)
 
 # prepare the bathymetry layer
-bathy <- raster(file_bathy) %>% 
-  projectRaster(crs = crs_raster) %>% 
-  crop(extent(bbox)) %>% 
-  abs() %>% 
-  mask(wa_mask, inverse = TRUE); plot(bathy, add =T)
+bathy <- rast(file_bathy) %>%
+  project(crs_raster) %>% 
+  crop(as(water, "Spatial")) %>%
+  abs() %>%
+  terra::mask(vect(wa_mask), inverse = TRUE); plot(bathy)
 
-# parameters
-years <- year_start:year_end
-min_depth <- 20  # fishable depth is about 20m in 1945 (from Gaynor 2008, p.38)
-increase_year <- 1970
+thresholds <- min_depth + pmax(0, depth_per_year*(years - increase_year)) # depth limits for each year
 
-# classify raster cells by whether they're within the fishable depth for that year or not
-results <- matrix(NA, nrow = ncell(bathy), ncol = length(years)) # Empty data frame to store results
-for (i in seq_along(years)) {
-  year <- years[i]
-  threshold <- min_depth + 1 *(ifelse(year - increase_year < 0, 0, year - increase_year))  # depth threshold per year, increases by 1m per year - expansion starts in 1970 just to account for the fact that increase is later than commercial
-  
-  fishable <- bathy <= threshold # fishable mask: 1 = fishable, 0 = too deep
-  
-  fishable_vals <- getValues(fishable)
-  results[, i] <- fishable_vals
-} # this loop checks for every raster cell and every year whether the cell is fishable (by depth)
-results_df <- as.data.frame(results)
-colnames(results_df) <- paste0("year_", years)
-
-# Add cell index or coordinates to join with spatial data
-results_df$cell <- 1:ncell(bathy)
-coords <- xyFromCell(bathy, results_df$cell)
-results_df <- cbind(results_df, coords)
-head(results_df)
-
-results_df[ , grepl("^year_", names(results_df))] <- 
-  lapply(results_df[ , grepl("^year_", names(results_df))], as.numeric)
-
-#plot check
-long_df <- pivot_longer(
-  results_df,
-  cols = starts_with("year_"),
-  names_to = "year",
-  names_prefix = "year_",
-  values_to = "fishable"
+fishable_stack <- rast(
+  lapply(thresholds, function(th) bathy <= th)
 )
-ggplot(long_df %>% filter(year %in% c(1945:2024)), aes(x = x, y = y, fill = fishable)) +
-  geom_raster() +
-  scale_fill_gradient(low = "white", high = colour_palette[5], name = "Fishable") +
-  coord_fixed() +
-  facet_wrap(~year, ncol = 10) +
-  theme_minimal()
 
-# overlap with the grid
-bathy[is.na(bathy)] <- 1 # these are shore cells that are not covered by bathy, as they're all <20m, they are fished from 1945.
-fishable_rasters <- list()
+names(fishable_stack) <- paste0("year_", years)
 
-plot(bathy); plot(water$geometry, add = T)
+fishable_summary <- terra::extract(
+  fishable_stack,
+  vect(water),
+  fun = mean,
+  na.rm = TRUE
+)
 
-for (year in years) {
-  threshold <- min_depth + ifelse(year - increase_year < 0, 0, year - increase_year)
-  fishable_rasters[[as.character(year)]] <- bathy <= threshold
-} # this loop makes a raster out of fishable/non fishable cells for every year
-
-fishable_summary <- data.frame(ID = water$ID)
-water <- st_make_valid(water) # make the object consistent, otherwise the computation doesn't work
-water <- st_collection_extract(water, "POLYGON")
-water <- st_cast(water, "MULTIPOLYGON")
-
-for (year in years) {
-  fishable_r <- fishable_rasters[[as.character(year)]]
-  
-  # Compute fraction of each polygon that is fishable
-  summary_vals <- exact_extract(fishable_r, water, 'mean')
-  
-  # Add to summary table
-  fishable_summary[[paste0("year_", year)]] <- summary_vals
-} # this loop calculates the area of each cell that is fishable (i.e. within the depth limit of that year)
-ntz_mask <- water$status != "Fished"
-
-# Apply override from 2019 onward
-fishable_summary[ntz_mask, paste0("year_", 2019:2024)] <- 0
+fishable_summary$ID <- water$ID
 
 fishable_long <- fishable_summary %>%
   pivot_longer(
@@ -372,26 +469,41 @@ fishable_long <- fishable_summary %>%
     values_to = "fishable_prop"
   ) %>%
   mutate(year = as.integer(year)) %>%
-  left_join(water, by = "ID")  # add geometry back
-fishable_long_sf <- st_as_sf(fishable_long)
+  left_join(water, by = "ID") %>%
+  st_as_sf()
 
-ggplot(fishable_long_sf %>% filter(year %in% c(1960:1975))) +
-  geom_sf(aes(fill = fishable_prop), col = NA) +
-  scale_fill_gradient(low = colour_palette[6], high = colour_palette[4], name = "Fishable") +
-  facet_wrap(~year) +
+
+## sanity check station 
+
+plot(fishable_stack[[c("year_1980", "year_1990", "year_2000", "year_2020")]])
+
+fishable_long %>%
+  filter(year == 2000) %>% 
+  ggplot() +
+  geom_sf(aes(fill = fishable_prop), colour = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
+
+
+## save for future use --------------------------------------------------------
+
+st_write(fishable_long %>% dplyr::select(!where(is.list)), "data/output_data/04_C_boat_rec_fishable_area_over_time.shp", append = FALSE)
+
+fishable_long <- st_read("data/output_data/04_C_boat_rec_fishable_area_over_time.shp")
 
 
 ## 4. Access point distance to cells ------------------------------------------
 
-BR <- st_read(file_boat_ramps) %>% 
+## this section (4.) calculates each cell's distance to each access point (boat ramp)
+
+glimpse(BR_n)
+glimpse(BR_w)
+
+BR <- rbind(BR_n %>% dplyr::select(name, geometry) %>% mutate(region = "north"), 
+            BR_w %>% dplyr::select(name, geometry) %>% mutate(region = "wadandi")) %>% 
   st_transform(4283) %>%
-  st_make_valid() %>%
-  #filter(!is.na(visit_2024)) %>% # remove ramps where there's no info on visitation (TEMPORARY, all should have data at some point)
-  mutate(build_year = as.numeric(build_year),
-         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
-         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
-         norm_popularity = com_prop / sum(com_prop, na.rm = TRUE)) %>% # com_prop is the proportion of catch coming from each 'boat_ramp' (locality) - see effort reconstruction excel sheet
+  st_make_valid() %>% 
   glimpse()
 
 plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add = TRUE)
@@ -410,14 +522,14 @@ st_centroid_within_poly <- function (poly) { # returns true centroid if inside p
   return(centroid_in_poly)
 }
 
-network <- st_read(file_network)
+network <- st_read(file_network); plot(network$geometry)
+BR <- st_as_sf(BR); st_crs(BR) <- NA 
 
-## Work out the probability of visiting a cell from each boat ramp based on distance and size
-BR <- st_as_sf(BR)
-st_crs(BR) <- NA 
-
-centroids <- st_centroid_within_poly(water)
-points <- as.data.frame(st_coordinates(centroids))%>% #The points start at the bottom left and then work their way their way right
+# find the centre of each grid cell
+sf::sf_use_s2(FALSE)
+centroids <- st_centroid(st_make_valid(water))
+sf::sf_use_s2(TRUE)
+points <- as.data.frame(st_coordinates(centroids))%>% # the points start at the bottom left and then work their way their way right
   mutate(ID = row_number()) 
 points_sf <- st_as_sf(points, coords = c("X", "Y")) 
 st_crs(points_sf) <- NA 
@@ -430,25 +542,28 @@ net <- activate(network, "nodes")
 st_crs(net)
 st_crs(net) <- NA 
 
+# measure the distance from access points to cell centroids
 network_matrix <- st_network_cost(net, from = BR, to = points_sf)
 network_matrix <- network_matrix * 111
-dim(network_matrix)
+dim(network_matrix) # number of ramps x number of cells
 
 glimpse(network_matrix)
 DistBR <- as.data.frame(t(network_matrix))
 colnames(DistBR) <- BR$name
 head(DistBR) # this gives us each cell's distance to the boat ramps
 
-# Plot check
-DistBR <- DistBR %>% mutate(ID = 1:nrow(.))
+## sanity check station
+DistBR <- DistBR %>% mutate(ID = centroids$ID)
 water_dist <- water %>% left_join(DistBR, by = "ID")
 water_dist_long <- water_dist %>% pivot_longer(cols = BR$name, names_to = "Ramp", values_to = "Distance_km")
 ggplot(water_dist_long) + 
   geom_sf(aes(fill = Distance_km), color = NA) + 
   scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ Ramp, ncol = 4) + 
-  labs(title = "Cell distance to each boat ramp", fill = "Distance (km)")
-ggsave("plots/checking_plots_during_setup/04C_boat_rec_boat_ramp_distance.png", plot = last_plot())
+  facet_wrap(~ Ramp, ncol = 8) + 
+  labs(title = "Cell distance to each boat ramp", fill = "Distance (km)") +
+  theme_minimal()
+
+ggsave("plots/checking_plots_during_setup/04_C_boat_rec_boat_ramp_distance.png", plot = last_plot(), height = 10, width = 10)
 
 
 ## 5. Create a utility function -----------------------------------------------
@@ -462,130 +577,118 @@ ggsave("plots/checking_plots_during_setup/04C_boat_rec_boat_ramp_distance.png", 
 # 1. distance to boat ramp, 2. size of the cell, and 3. whether the cell is 'fishable' that year and 4. fishing effort
 # After the SZ comes in the effort will also be redistributed.
 
+years <- year_start:year_end
+nyears <- length(years)
 
-years <- sort(unique(fishable_long_sf$year))
 ramps <- unique(BR$name)
 nramps <- length(ramps)
 
-# Get full list of cell IDs from fishable_long_sf
-all_cell_ids <- sort(unique(fishable_long_sf$ID))
-ncells <- length(all_cell_ids)
-nyears <- length(years)
+cell_ids <- sort(unique(fishable_long$ID))
+ncells <- length(cell_ids)
 
 # Distance from each cell to each ramp (matrix)
-# Assuming `DistBR` has same row order as `water`
-Cell_Dist <- DistBR %>%
-  mutate(cell_id = water$ID,
-         Area = as.vector(water$cell_area / 1e6))  # km²
-saveRDS(Cell_Dist, "data/output_data/04C_boat_rec_cell_dist.rds")
+summary(DistBR$ID == water$ID)# assuming `DistBR` has same row order as `water`
+cell_dist <- DistBR
+water_q
 
+saveRDS(cell_dist, "data/output_data/04_C_boat_ramp_cell_dist.rds")
 
-BR_U_array <- array(0, dim = c(ncells, nramps, nyears),
-                    dimnames = list(cell_id = all_cell_ids,
+BR_U_array <- array(0, dim = c(ncells, nramps, 12, nyears),
+                    dimnames = list(cell_id = cell_ids,
                                     ramp = ramps,
+                                    month = 1:12,
                                     year = as.character(years)))
 
-for (y in seq_along(years)) {
-  yr <- years[y]
+for (YEAR in seq_along(years)) {
+  yr <- years[YEAR]
   
-  # Step 2.1: Get fishable surface for the year
-  fish_yr <- fishable_long_sf %>%
+  fishable_depth <- fishable_long %>%
     filter(year == yr) %>%
-    mutate(fishable_prop = if_else(
-      status %in% c("NTZ_boat", "NTZ_boat_shore") & year >= 2019, 0, fishable_prop)) %>%
+    rename(fishable_prop = fshbl_p) %>%  # fshbl_p = fishable_prop (saving a file earlier as .shp shortens colnames)
     dplyr::select(ID, fishable_prop)
   
-  # Step 2.2: Join distances, areas, and fishable_prop
-  Vj_df <- Cell_Dist %>%
-    inner_join(fish_yr, by = c("cell_id" = "ID")) %>%
-    arrange(cell_id)
+  Vj_df <- cell_dist %>%
+    inner_join(fishable_depth, by = "ID") %>%
+    arrange(ID)
   
-  # Step 2.3: Calculate raw utility: exp(-distance) * area * fishable proportion
-  # We'll loop over ramps
-  U_mat <- matrix(0, nrow = nrow(Vj_df), ncol = nramps)
+  row_ids <- match(Vj_df$ID, cell_ids)
   
-  for (r in seq_along(ramps)) {
-    ramp_name <- ramps[r]
-    U_mat[, r] <- exp(-Vj_df[[ramp_name]]) * Vj_df$Area * Vj_df$fishable_prop # exp(-Vj_df...) because otherwise high utility is given to areas far from ramps
+  for (MONTH in 1:12) { # because each month's catchability can change (temporal closures etc.), get the correct one
+    
+    cell_area <- water_q[, MONTH, YEAR]
+    U_mat <- matrix(0, nrow = nrow(Vj_df), ncol = nramps) # cells x ramps
+    
+    for (RAMP in seq_along(ramps)) {
+      ramp_name <- ramps[RAMP]
+      U_mat[, RAMP] <- exp(-Vj_df[[ramp_name]]) * cell_area * Vj_df$fishable_prop # exp(-Vj_df...) because otherwise high utility is given to areas far from ramps
+    }
+    
+    ramp_sums <- colSums(U_mat, na.rm = TRUE)
+    U_norm <- sweep(U_mat, 2, ramp_sums, "/")
+    
+    BR_U_array[row_ids, , MONTH, YEAR] <- U_norm
+    
   }
-  
-  # Step 2.4: Normalize utilities so they sum to 1 per ramp
-  U_norm <- sweep(U_mat, 2, colSums(U_mat, na.rm = TRUE), "/")
-  
-  # Step 2.5: Store in the 3D array
-  # Align to full cell list
-  row_ids <- match(Vj_df$cell_id, all_cell_ids)
-  BR_U_array[row_ids, , y] <- U_norm
-}
-plot(BR_U_array[,,70])
-head(BR_U_array[,,70])
+} # this loop calculates how useful a cell is to fishing, based on its area (the bigger, the more useful), its distance to ramps (the closer, the more useful), and its fishable depth status (if within fishable depth that year, useful)
+head(BR_U_array[,,,70])
 head(water)
 
-br_slice <- BR_U_array[,,70]
-
-# Calculate row sums (sum of utilities across ramps for each cell)
-row_sums <- rowSums(br_slice)
-
-# Add the sums as a new column to the water sf object
-water$utility_sum <- row_sums
-
-# Plot using ggplot2, coloring polygons by the sum of utilities
+## sanity check plot (utility across all ramps)
+br_slice <- BR_U_array[,,,125]
+row_sums <- rowSums(br_slice) # calculate row sums (sum of utilities across ramps for each cell)
+water$utility_sum <- row_sums # add the sums as a new column to the water sf object
 ggplot(water) +
-  geom_sf(aes(fill = utility_sum), color = NA) +
-  scale_fill_viridis_c(option = "plasma", trans = "log10", 
-                       na.value = "grey80", name = "Sum of Utilities") +
+  geom_sf(aes(fill = log(utility_sum)), color = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:3]) +
   theme_minimal() +
-  labs(title = "Sum of Utilities Across Ramps per Cell",
-       subtitle = "Layer 70 of BR_U_array") +
   theme(legend.position = "right")
 
 
-
-# plot check
-BR$name
+## sanity check plot (utility for a single ramp over time)
 ramp_check <- "GB_Bunbury_Stirling_St"
-utility_check <- as.data.frame(BR_U_array[, ramp_check, ])  # dimensions: cells × years
-utility_check$cell_id <- as.integer(rownames(utility_check))
+utility_check <- as.data.frame(BR_U_array[, ramp_check, 1, ])  # dimensions: cells × ramp x month x years
+utility_check$ID <- water$ID
 head(utility_check)
 
-water_catch <- water %>% mutate(cell_id = row_number()) %>% left_join(utility_check, by = "cell_id")
-water_catch_long <- water_catch %>% pivot_longer(cols = as.character(years), names_to = "year", values_to = "Catchability")
-ggplot(water_catch_long) + 
-  geom_sf(aes(fill = log(Catchability)), color = NA) + 
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
-  facet_wrap(~ year, ncol = 16) + 
-  labs(title = paste0("commercial catchability of each cell, \nby distance from ", ramp_check, " ramp, cell size and tech-fishability"), fill = "log(Catchability)")
-ggsave("plots/checking_plots_during_setup/04C_boat_rec_boat_ramp_catchability_over_time.png", plot = last_plot())
+water_catch <- water %>% left_join(utility_check, by = "ID")
 
-# Plot check (notice the difference between popular/non-popular ramps)
-utility_check2 <- as.data.frame(BR_U_array[,,80]) %>% mutate(cell_id = as.numeric(rownames(BR_U_array[,,80])))
-class(utility_check2$cell_id)
-water_catch <- water %>% mutate(cell_id = row_number()) %>% left_join(utility_check2, by = "cell_id")
-water_catch_long <- water_catch %>% pivot_longer(cols = BR$name, names_to = "Ramp", values_to = "Catchability")
-ggplot(water_catch_long) + 
+water_catch_long <- water_catch %>% pivot_longer(cols = as.character(years), names_to = "year", values_to = "Catchability")
+ggplot(water_catch_long %>% dplyr::filter(year %in% c(1940, 1960, 1980, 2000, 2024))) + 
   geom_sf(aes(fill = log(Catchability)), color = NA) + 
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  facet_wrap(~ Ramp, ncol = 4) + 
-  labs(title = "Catchability of each cell in 2024, by boat ramp distance and cell size - \nnotice differences between popular/non popular ramps", fill = "log(Catchability)")
-ggsave("plots/checking_plots_during_setup/04C_boat_rec_catchability_surface_by_ramp.png", plot = last_plot())
+  facet_wrap(~ year, ncol = 10) + 
+  labs(title = paste0("commercial catchability, \nby cell size, depth-fishability, and \ndistance from ", ramp_check, " ramp"), fill = "log(Catchability)")+
+  theme_minimal()
+
+ggsave("plots/checking_plots_during_setup/04_C_boat_rec_boat_ramp_catchability_over_time.png", plot = last_plot(), height = 10, width = 10)
 
 
 ## 6. Allocating effort to cells ----------------------------------------------
 
-# We know the fishing effort over the years
-# We know the fishing effort across months
-# We know how 'useful' each cell is for fishing (utility function)
-# Now we want to allocate fishing effort to cells over time
-BR_trips <- ramp_effort_df %>% # This is just the trips from each boat ramp
+## this section allocates the fishing effort from section 2., according to the utility of each cell.
+
+# we know the fishing effort over the years
+glimpse(ramp_effort_n)
+glimpse(ramp_effort_w)
+ramp_effort <- rbind(ramp_effort_n, ramp_effort_w)
+
+# we know the fishing effort across months
+# we know how 'useful' each cell is for fishing (utility function)
+glimpse(BR_U_array)
+
+# now we want to allocate fishing effort to cells over time
+BR_trips <- ramp_effort %>% # This is just the trips from each boat ramp
   arrange(year, month) %>%
-  mutate(num_year = match(year, sort(unique(year)))) # This is to number the years 1 to 80 for the loop.
-saveRDS(BR_trips, "data/output_data/04C_BR_trips.rds")
+  mutate(num_year = match(year, sort(unique(year)))) %>% # This is to number the years 1 to 80 for the loop.
+  glimpse()
+saveRDS(BR_trips, "data/output_data/04_A_BR_trips.rds")
 
 ggplot(BR_trips, aes(x = order(year, month), y = adjusted_effort)) +
   geom_line(color = colour_palette[5]) +
   facet_wrap(~ boat_ramp, ncol = 4) +
-  labs(x = "Time (month index)", y = "Effort", title = "Commercial Boat Ramp Effort Over Time")
-ggsave("plots/checking_plots_during_setup/04C_boat_rec_effort_over_time_by_ramp.png", plot = last_plot())
+  labs(x = "Time (month index)", y = "Effort", title = "Commercial Boat Ramp Effort Over Time") +
+  theme_minimal()
+ggsave("plots/checking_plots_during_setup/04_A_commercial_effort_over_time_by_ramp.png", plot = last_plot())
 
 BR_trips <- BR_trips %>%
   dplyr::select(num_year, month, boat_ramp, adjusted_effort) %>%
@@ -598,113 +701,113 @@ BR_trips <- BR_trips %>%
 
 
 # now assign to cells
-
 b_fishing <- array(0, dim = c(NCELL, 12, length(years))) # this array has a row for every cell, a column for every month, and a layer for every year
 months <- array(0, dim = c(NCELL, 12)) # array for the number of months
 ramps <- array(0, dim = c(NCELL, length(BR$name))) # array for the number of ramps
-layer <- 1
 
 head(BR_trips)
 head(BR)
-head(BR_U_array[,,1])
+head(BR_U_array[,,,1])
 
 for(YEAR in 1:length(years)){ # for all years,
   
   print(YEAR)
   
+  temp <- BR_trips %>%
+    filter(num_year == YEAR) %>% 
+    dplyr::select(-c(num_year, month))
+  temp <- as.matrix(temp)
+  
   for(MONTH in 1:12){ # run the loop for every month,
     
     for(RAMP in 1:length(BR$name)){ # and for every ramp,
       
-      temp <- BR_trips %>% 
-        filter(num_year == YEAR) %>% 
-        dplyr::select(-c(num_year, month))
+      ramps[,  RAMP] <- BR_U_array[, RAMP, MONTH, YEAR] * temp[MONTH, RAMP] # assign fishing effort to every cell, based on its utility
       
-      temp <- as.matrix(temp)
-      for(CELL in 1:NCELL){ # and assign fishing effort to every cell, based on its utility
-        ramps[CELL,  RAMP] <- BR_U_array[CELL, RAMP, YEAR] * temp[MONTH, RAMP]
-      }
-    }
+    }      
     months[, MONTH] <- rowSums(ramps)
   }
-  b_fishing[ , , layer] <- months 
-  layer <- layer + 1
+  b_fishing[ , , YEAR] <- months 
 } # this loop assigns each cell a fishing effort based on utility by month
-b_fishing
+head(b_fishing)
+
 
 # plot check
-head(b_fishing[,,80])
-
 water
-year_idx <- 75  # first year
+year_idx <- 125  # first year
 month_idx <- 1  # January
 
-# Extract effort vector (one value per cell)
-effort_vec <- b_fishing[, month_idx, year_idx]
-
-# Add to water polygons
+effort_vec <- b_fishing[, month_idx, year_idx] # Extract effort vector (one value per cell)
 water$effort <- effort_vec
 
-# Plot
 ggplot(water) +
-  geom_sf(aes(fill = log(effort))) +
-  scale_fill_viridis_c() +
+  geom_sf(aes(fill = log(effort)), color = NA) +
   labs(title = paste("Fishing Effort - Year", year_idx, "Month", month_idx),
        fill = "log Effort") +
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
   theme_minimal()
+
 
 ## X. Make a GIF for the laughs -----------------------------------------------
 
 library(gifski)
 
 frame_count <- 1
-m <- 12
+m <- 1
+global_limits <- range(log(b_fishing + 1), na.rm = TRUE)
+
 for (y in seq_along(years)) {
-  
-  # Update water$effort for this year and month
-  water$effort <- b_fishing[, 1, y]
-  
-  # Year and month labels
   year_idx <- years[y]
-  month_idx <- m
-  
-  # Plot
-  p <- ggplot(water) +
-    geom_sf(aes(fill = log(effort)), color = NA) +
-    scale_fill_gradientn(colours = colour_palette[6:4], na.value = NA) +
+  print(y)
+  for (m in 1:12) {
+    month_idx <- m
+    
+    # update effort for this year & month
+    water$effort <- b_fishing[, m, y]
+    
+    p <- ggplot(water) +
+      geom_sf(aes(fill = log(effort)), colour = NA) +
+      scale_fill_gradientn(
+        colours = colour_palette[6:4],
+        limits  = global_limits,
+        oob     = scales::squish,  # very important
+        na.value = NA
+      )
     labs(
-      title = paste("Fishing Effort - Year", year_idx, "Month", month_idx),
+      title = paste("Fishing Effort – Year", year_idx, "Month", month_idx),
       fill = "log Effort"
     ) +
-    theme_minimal()
-  
-  # Save frame
-  ggsave(
-    filename = sprintf("plots/gif_frames/boat_rec_effort_frame_%03d.png", frame_count),
-    plot = p,
-    width = 6, height = 6, dpi = 150
-  )
-  
-  frame_count <- frame_count + 1
+      theme_minimal()
+    
+    ggsave(
+      filename = sprintf(
+        "plots/gif_frames/04_C_boat_rec_fishing_setup_gif_frames/boat_rec_effort_frame_%04d.png",
+        frame_count
+      ),
+      plot = p,
+      width = 6,
+      height = 6,
+      dpi = 150
+    )
+    
+    frame_count <- frame_count + 1
+  }
 }
 
 # stitch the GIF frames together
-png_files <- list.files("plots/gif_frames", pattern = "boat_rec_effort_frame_\\d+\\.png", full.names = TRUE)
+png_files <- list.files("plots/gif_frames/04_C_boat_rec_fishing_setup_gif_frames", pattern = "boat_rec_effort_frame_\\d+\\.png", full.names = TRUE)
 gifski(
   png_files,
   gif_file = "plots/gifs/boat_rec_fishing_effort_over_time.gif",
   width = 600,
   height = 600,
-  delay = 0.25  # seconds per frame (adjust as needed)
+  delay = 0.05  # seconds per frame (adjust as needed)
 )
-
-
 ## Set up effort for burn in --------------------------------------------------
-
-# boat 
+ 
 location_name <- unique(BR$name)
 
-BR_trips <- ramp_effort_df %>%
+BR_trips <- ramp_effort %>%
   group_by(boat_ramp) %>%
   summarise(boat_days = sum(adjusted_effort, na.rm = TRUE)) %>%
   arrange(desc(boat_days))
@@ -746,29 +849,28 @@ yr <- 1
 
 for(YEAR in 1:n_years_tot){
   
+      temp <- burn_in_effort %>%
+        dplyr::select(-c(effort))
+      
+      temp <- as.matrix(temp)  
+      
   for(MONTH in 1:12){
     
     for(RAMP in 1:length(location_name)){
       
-      temp <- burn_in_effort %>%
-        dplyr::select(-c(effort))
-      
-      temp <- as.matrix(temp)
-      
       for(CELL in 1:NCELL){
-        ramps[CELL, RAMP] <- BR_U_array[CELL, RAMP, YEAR] * temp[MONTH, RAMP]
+        ramps[CELL, RAMP] <- BR_U_array[CELL, RAMP, MONTH, YEAR] * temp[MONTH, RAMP]
       }
     }
     
     months[, MONTH] <-  rowSums(ramps)
   }
-  b_burn_in_fishing[ , , yr] <- months
-  b_burn_in_fishing[ , , yr] <- b_burn_in_fishing[ , , yr] * spatial_q[, 1]
-  yr <- yr + 1
+  b_burn_in_fishing[ , , YEAR] <- months
+  b_burn_in_fishing[ , , YEAR] <- b_burn_in_fishing[ , , YEAR] * water_q[, , 1]
 } # this loop assigns each cell an amount of fishing effort each month and across years based on how useful it is (how far from a boatramp and how frequented that boat ramp is). for burn-in, so not based on real values.
 
 
-saveRDS(b_burn_in_fishing, file = "data/output_data/04C_boat_rec_burn_in_fishing.rds")
+saveRDS(b_burn_in_fishing, file = "data/output_data/04_C_boat_rec_burn_in_fishing.rds")
 
 # Charlotte then adds another burn-in array for high mortality, I'm not doing rn for the sake of moving along
 
