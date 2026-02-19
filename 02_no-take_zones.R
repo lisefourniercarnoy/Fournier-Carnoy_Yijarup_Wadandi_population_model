@@ -111,11 +111,21 @@ TC <- TC %>%
 # 2023: 01aug - 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
 
 # add the closures in the NTZ dataframe
-NTZ <- bind_rows(TC, NTZ)
-plot(NTZ[, !sapply(NTZ, is.list)])
+closures <- bind_rows(TC, NTZ)
+plot(closures[, !sapply(closures, is.list)])
 
 
 ## Adjusting the grid to account for temporal/spatial closures ----------------
+
+# colnames that should be present: 
+# SC_status SC_restriction_date
+# TC_status TC_restriction_date, TC_restriction_months, TC_restriction_perc_fished
+cols <- c("ID", "name", "zone_type", "zone", "epbc", "type", 
+          "sand", "reef", "seagrass", 
+          fleets, 
+          "TC_status", "SC_status",
+          "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished", "SC_restriction_date", 
+          "geometry")
 
 # Make a grid for areas that are not fished
 NTZarea <- st_intersection(NTZ, water) %>% 
@@ -123,8 +133,56 @@ NTZarea <- st_intersection(NTZ, water) %>%
   st_transform(common_crs)
 plot(NTZarea$geometry)
 
+TCarea <- st_intersection(water, TC, sparse = F) %>% 
+  mutate(zone_type = NA, 
+         zone = NA) %>% 
+  st_make_valid() %>%
+  st_transform(common_crs)
+plot(TCarea$geometry)
+
+SC_only <- st_difference(NTZarea, st_union(TCarea)) %>%
+  mutate(
+    SC_status = TRUE,
+    TC_status = FALSE,
+    TC_restriction_date = list(NA),
+    TC_restriction_months = list(NA),
+    TC_restriction_perc_fished = list(NA)
+  ) %>% 
+  dplyr::select(any_of(cols))
+
+TC_only <- st_difference(TCarea, st_union(NTZarea)) %>% 
+  mutate(
+    TC_status = TRUE,
+    SC_status = FALSE,
+    SC_restriction_date = NA
+  ) %>% 
+  dplyr::select(any_of(cols))
+
+overlap <- st_intersection(NTZarea, TCarea) %>% 
+  mutate(
+    TC_status = TRUE,
+    SC_status = TRUE,
+  ) %>% 
+  dplyr::select(all_of(cols))
+
+names(SC_only)
+names(TC_only)
+names(overlap)
+
+
+
+combined_closures <- bind_rows(
+  SC_only,
+  TC_only,
+  overlap
+  ) %>% 
+  dplyr::filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) %>% 
+  dplyr::select(any_of(cols))
+plot(combined_closures$geometry, col = "red")
+
+
 # Make a grid for areas that are fished
-NTZ_union <- st_union(NTZarea) %>%
+NTZ_union <- st_union(combined_closures) %>%
   st_make_valid() %>%
   st_transform(common_crs)
 plot(NTZ_union)
@@ -136,26 +194,34 @@ plot(fished_area$geometry)
 
 # Put this back together with the fished area to create "water" again
 fished_area <- st_sf(fished_area) %>%
-  mutate(status = "Fished",
+  mutate(name = NA,
+         zone_type = NA,
+         zone = NA,
+         epbc = NA,
+         
+         TC_status = FALSE,
+         SC_status = FALSE,
          SC_restriction_date = NA,
          TC_restriction_date = NA,
          TC_restriction_months = NA,
-         TC_restriction_perc_fished = NA)
+         TC_restriction_perc_fished = NA) %>% 
+  dplyr::select(any_of(cols))
 plot(fished_area$geometry)
 fished_area[,fleets] <- NA
+names(fished_area)
+names(combined_closures)
 
-NTZ_union <- st_sf(NTZarea) %>%
-  mutate(status = case_when(grepl("temporal closure", name, fixed = TRUE) ~ "TC",
-                            .default = "SC")) %>% 
-  dplyr::select(names(fished_area), all_of(fleets))
-
-water <- rbind(NTZ_union, fished_area)
+water <- rbind(combined_closures, fished_area) %>% 
+  mutate(ID = 1:nrow(.))
 plot(water$geometry)
-
 
 # Check that the NTZs are where you expect them to be
 ggplot(water) +
-  geom_sf(aes(fill = status)) +
+  geom_sf(aes(fill = SC_status), col = NA) +
+  theme_void() +
+  scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
+ggplot(water) +
+  geom_sf(aes(fill = TC_status), col = NA) +
   theme_void() +
   scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
 
