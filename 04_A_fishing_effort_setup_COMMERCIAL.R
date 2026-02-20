@@ -24,15 +24,10 @@ rm(list = ls())
 
 library(tidyverse) # data manipulation
 library(sf) # shapefiles
-#library(raster) # bathy rasters
 library(terra) # for fast raster computations
-#library(stringr)
-#library(forcats)
 library(RColorBrewer) # plotting colours
-#library(geosphere)
 library(abind) # dealing with matrices
 library(sfnetworks) # distance from cell to cell
-#library(purrr)
 library(exactextractr) # extracting raster values
 
 
