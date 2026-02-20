@@ -74,7 +74,7 @@ water <- readRDS(file_water) %>% filter(!is.na(ID))
 NCELL <- nrow(water)
 
 # identify the important cells
-temporal_cells <- water$ID[water$status == "TC"]
+temporal_cells <- water$ID[water$TC_status == TRUE]
 
 # setup the arrays to calculate things.
 water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x months x years
@@ -91,17 +91,13 @@ for (YEAR in 1:dim(water_area)[3]) {
 
     # spatial closures
     restriction_dates <- as.numeric(substr(water$SC_restriction_date, 7, 10))
-    fleet_allowed <- water$boat_rec # if FALSE, cell is not fishable for this fleet
+    water_area[, MONTH, YEAR] <- water$cell_area
     
-    restriction_active <- !is.na(restriction_dates) & current_year >= restriction_dates
-    fleet_blocked <- !is.na(fleet_allowed) & fleet_allowed == FALSE
-    restricted <- restriction_active | fleet_blocked
-    
-    water_area[, MONTH, YEAR] <- ifelse( # if there are restrictions, fishable area = 0.
-      restricted,
-      0,
-      water$cell_area
+    restricted_cells <- which(
+      !is.na(water$boat_rec) & water$boat_rec == FALSE & # where fleet is not allowed,
+        !is.na(restriction_dates) & current_year >= restriction_dates # and when SC is in place...
     )
+    water_area[restricted_cells, MONTH, YEAR] <- 0 # ...the cell is not fishable
 
     # temporal closures
     for (CELL in temporal_cells) {
@@ -121,7 +117,7 @@ for (YEAR in 1:dim(water_area)[3]) {
         
         if (MONTH %in% TC_months_current) {
           month_idx <- match(MONTH, TC_months_current)
-          water_area[CELL, MONTH, YEAR] <- water$cell_area[CELL] * TC_perc_current[month_idx]
+          water_area[CELL, MONTH, YEAR] <- water_area[CELL, MONTH, YEAR] * TC_perc_current[month_idx]
         }
       }
     }
@@ -141,11 +137,11 @@ test_year <- 125
 ## random fished cell: 1000
 
 # restrictions in this cell should be:
-glimpse(st_drop_geometry(water[test_cell, c("status", "SC_restriction_date", "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished")]))
+glimpse(st_drop_geometry(water[test_cell, c("TC_status", "SC_status", "boat_rec", "SC_restriction_date", "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished")]))
 
 # check that it is correct
-cat("In month", test_month, "of year", (year_start+test_year),
-    ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable.", "NOT fishable."), "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
+cat("In month", test_month, "of year", (year_start+test_year-1),
+    ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable", "NOT fishable"), "for commercial boats.", "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
 
 
 ### 1.b. divide the fishable area by the grid sum area ------------------------
@@ -182,7 +178,7 @@ water_catch <- water %>% left_join(catch_df, by = "ID")  # ID must be in 'water'
 ggplot(water_catch) +
   geom_sf(aes(fill = test_catchability), color = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(title = paste0("Catchability in ", (year_start+test_year), ", month ", test_month), fill = "Catchability") +
+  labs(title = paste0("Comm. Catchability in ", (year_start+test_year), ", month ", test_month), fill = "Catchability") +
   theme_minimal()
 
 ggsave("plots/checking_plots_during_setup/04_A_commercial_catchability_test_year.png", plot = last_plot(), height = 15, width = 5)
@@ -190,8 +186,7 @@ ggsave("plots/checking_plots_during_setup/04_A_commercial_catchability_test_year
 ## save for future use --------------------------------------------------------
 
 saveRDS(water_q, file = "data/output_data/04_A_commercial_spatial_q_NTZ.rds")
-
-#water_q <- readRDS("data/output_data/04_A_commercial_spatial_q_NTZ.rds")
+water_q <- readRDS("data/output_data/04_A_commercial_spatial_q_NTZ.rds")
 
 
 ## 2. Fishing days -------------------------------------------------------------
@@ -298,7 +293,7 @@ boat_month_prop <- boat_month_prop %>%
 prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
 plot(prop_month_ave)
-saveRDS(prop_month_ave, "data/output_data/04A_commercial_metro_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
+saveRDS(prop_month_ave, "data/output_data/04_A_commercial_metro_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
 #### 2.N.c. distribute monthly effort into boat ramps -------------------------
 
