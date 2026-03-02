@@ -26,6 +26,8 @@ colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 ## Files used in this script --------------------------------------------------
 
 file_water <- "data/output_data/02_watergrid.rds"
+file_bathy <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
+file_hab_model <- "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds"
 
 ## Centroid Function ----------------------------------------------------------
 
@@ -50,10 +52,23 @@ st_centroid_within_poly <- function (poly) { # This returns the centre of the pl
 water <- readRDS(file_water) %>% 
   st_make_valid()
 
+bathy <- raster::raster(file_bathy); plot(bathy)
+
+# extract 
+water$depth <- exactextractr::exact_extract(
+  bathy,
+  water,
+  'mean'
+) 
+water <- water %>% 
+  mutate(depth = ifelse(depth > 0, 0, -depth)) # remove above-water depths, and make depth a positive (to match the habitat affinity data)
+
+depth <- water$depth
+depth <- as.vector(depth)
+
 ggplot(water) +
-  geom_sf(aes(fill = SC_status), colour = NA) +
-  theme_void() +
-  scale_fill_manual(values=c(colour_palette[4], colour_palette[6], colour_palette[5], colour_palette[1]))
+  geom_sf(aes(fill = depth), colour = NA) +
+  theme_void()
 
 
 ## Calculate cell centroids and distance-to-neighbour-cells -------------------
@@ -230,43 +245,57 @@ saveRDS(p_habitat, "data/output_data/03_p_habitat.rds")
 
 ## Create adult movement probability using utility function -------------------
 
-# Load files if need be
-pDist <- readRDS("data/output_data/03_pDist.rds")
-
-list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
-# First determine the utility of each of the cells 
-# This is very sensitive to changes in the habitat values particularly for reef 
+# movement probability depends on three things:
+
+# 1. habitat affinity
+hab_aff_mod <- readRDS(file_hab_model)
+summary(hab_aff_mod)
+hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model predictors to make a prediction about how many fish we can expect to see in this cell. 
+                   newdata = water %>% mutate(depth2 = depth^2,
+                                              size_class = "n_mature"),
+                   type = "response")
+list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
+
+
+# 2. distance from other cells
+pDist <- readRDS("data/output_data/03_pDist.rds")
+
+
+# 3. swimming speed 
 
 ## Small movement Swim Speed = 2.5 95% within approx 10km 
 ## Medium movement Swim Speed = 5 95% within approx 25km
 ## Big movement Swim Speed = 10 95% within approx 45km 
-
 swim_speed_adult <- 10
-
 a = -(1 / swim_speed_adult)
-b =  0.150      # Attractiveness of reef habitat
-c =  0.010      # Attractiveness of seagrass habitat
-d =  0.005      # Attractiveness of sand habitat
-e =  0.2        # attractiveness of cockburn sound cells
 
-# From the attractivity of each habitat type, and the cell's distance to other cells, each cell's attractiveness is calculated (based on the % of each habitat in that cell)
-adult_hab_attractivity <- (a * pDist) + (b * reef) + (c * seagrass) + (d * sand)
+
+# from this we can determine the utility of each of the cells.
+# This is very sensitive to changes in the habitat values.
+
+adult_hab_attractivity <- (a * pDist) + hab_aff # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
 glimpse(adult_hab_attractivity)
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-for (r in 1:NCELL){
-  for (c in 1:NCELL){
-    U <- exp(adult_hab_attractivity[r, c])
-    cell_utility[r, c] <- U
-  }
-} # this loop calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+cell_utility <- exp(adult_hab_attractivity) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 rowU <- as.data.frame(rowSums(cell_utility))
+
+# quick plot check (looks good)
+water_2 <- water
+water_2$test <- as.numeric(rowU$`rowSums(cell_utility)`)
+summary(water_2$test)
+ggplot() +
+  geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
+  scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
+  theme_void() 
+
+
 
 # Calculate the probability that the fish will move to this site
 adult_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
@@ -387,29 +416,52 @@ recruitment <- as.vector(recruitment[,1])
 
 ## Recruit movement -----------------------------------------------------------
 
-# Want the recruits to stay in seagrass until they mature and move to the reef
+water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
+# movement probability depends on three things:
+
+# 1. habitat affinity
+hab_aff_mod <- readRDS(file_hab_model)
+summary(hab_aff_mod)
+hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model predictors to make a prediction about how many fish we can expect to see in this cell. 
+                   newdata = water %>% mutate(depth2 = depth^2,
+                                              size_class = "n_mature"),
+                   type = "response")
+list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
+
+
+# 2. distance from other cells
+pDist <- readRDS("data/output_data/03_pDist.rds")
+
+
+# 3. swimming speed 
+
+## Small movement Swim Speed = 2.5 95% within approx 10km 
+## Medium movement Swim Speed = 5 95% within approx 25km
+## Big movement Swim Speed = 10 95% within approx 45km 
 swim_speed_juv <- 5
-
 a = -(1/swim_speed_juv)
-b =  0.150     # Attractiveness of reef habitat
-c =  0.010     # Attractiveness of seagrass habitat
-d =  0.005     # Attractiveness of sand habitat
 
-juv_hab_attractivity <- (a * pDist) + (b * reef) + (c * seagrass) + (d * sand)
+
+juv_hab_attractivity <- (a * pDist) + hab_aff # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
+glimpse(juv_hab_attractivity)
 
 # Calculate the summed utility across the rows 
-rowU <- matrix(NA, ncol=1, nrow=NCELL)
-cell_utility <- matrix(NA, ncol=NCELL, nrow=NCELL)
+rowU <- matrix(NA, ncol = 1, nrow = NCELL)
+cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-for (r in 1:NCELL){
-  for (c in 1:NCELL){
-    U <- exp(juv_hab_attractivity[r,c])
-    cell_utility[r,c] <- U
-  }
-} # this loop makes --??
-
+cell_utility <- exp(juv_hab_attractivity) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+glimpse(cell_utility)
 rowU <- as.data.frame(rowSums(cell_utility))
+
+# quick plot check (looks good)
+water_2 <- water
+water_2$test <- as.numeric(rowU$`rowSums(cell_utility)`)
+summary(water_2$test)
+ggplot() +
+  geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
+  scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
+  theme_void()
 
 
 # Calculate the probability that the fish will move to this site
@@ -425,7 +477,7 @@ rowSums(juv_cell_movement_probability) # should be all 1, because the probabilit
 
 num_samples <- 3  # Number of cells to visualize
 plot_list <- list()  # Store all plots here
-
+set.seed(1)
 for (i in 1:num_samples) {
   random_point <- sample(1:NCELL, 1)  # Pick a random cell
   movement <- juv_cell_movement_probability[random_point, ]

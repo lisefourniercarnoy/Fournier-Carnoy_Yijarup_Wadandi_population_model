@@ -22,6 +22,7 @@ library(MASS)
 library(CheckEM) # obtain data from EM
 library(tidyverse) # data handling
 library(sf) # to handle spatial objects
+library(glmmTMB) # to fit GLMM
 
 ## Files needed ---------------------------------------------------------------
 
@@ -173,7 +174,7 @@ ggplot(dat, aes(x = depth, y = count)) +
 ## Actually try some models ---------------------------------------------------
 
 ## the aim of the analysis is to understand the relative affinity of mature and immature snapper to different habitat
-dat$depth <- scale(dat$depth) # center + scale depth
+# dat$depth <- scale(dat$depth) # center + scale depth # i think this may be breaking the prediction later.
 dat$depth2 <- dat$depth^2 # square depth
 
 # check for correlation between predictors. nothing should be above 0.7.
@@ -198,7 +199,7 @@ summary(glm_p)
 # overdispersion: conditional variance = conditional mean ?
 mean(glm_p$fitted.values)
 var(glm_p$residuals) # lol very much not. var>mean, overdispersion detected.
-# this means that Poisson is not suitable. Ignoring thi leds to inflated SEs, and therefore wrong p-values
+# this means that Poisson is not suitable. Ignoring this leads to inflated SEs, and therefore wrong p-values
 
 
 ### 2. try the Negative Binomial distribution ---------------------------------
@@ -208,6 +209,7 @@ glm_nb <- glm.nb(data = dat, # 'count is dependent on depth, size class, and hab
                    size_class +
                    reef + sand +
                    size_class:depth +
+                   size_class:depth2 +
                    size_class:reef + 
                    size_class:sand # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
 )
@@ -219,202 +221,105 @@ lmtest::lrtest(glm_p, glm_nb) # very much significant. this would justify the us
 
 
 # however the diagnostics look criminal so we'll try a zero-inflated model
+par(mfrow = c(2, 2))
 plot(glm_nb) #top left has 2 clouds (instead of a single shapeless cloud), qq-plot is not sitting on the line...
 
+summary(glm_nb)
+saveRDS(glm_nb, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds")
 
-### 3. try a zero-inflated model ----------------------------------------------
+# AS OF 02/03/2026 I AM USING THE ABOVE MODEL. 
 
-# we have loads of zeroes
-(sum(dat$count == 0)/nrow(dat))*100 # 72% of zeroes... that's wayyy too much to ignore.
-pr <- predict(glm_nb, type = "response")
-exp(-1*mean(pr))*500 # we would expect around 230 zeroes for our dataset but there's...
-sum(dat$count == 0) # close to 650...
+### 3. test for zero-inflation ------------------------------------------------
 
-# therefore let's try a zero-inflated model (try poisson first)
-glm_zip <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
-                          count ~ depth + depth2 +
-                            size_class +
-                            reef + sand +
-                            size_class:depth +
-                            size_class:reef + 
-                            size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
-                          dist = "poisson", link = "logit"
-)
-summary(glm_zip) # it looks like 2 model outputs
-# count model coefficients (poisson with log link) is basically a normal glm (poisson) that tells you how much more counts are expected along each predictor.
-# zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios. not useful for us here, but they account for the zero-inflation.
+# BRUV data may be zero-inflated (more zeroes than expected)
+# we will test for zero-inflation by calculating how many zeroes our model expects
+pred <- predict(glm_nb, type = "response")
+theta <- sigma(glm_nb)
+expected_zero_prob <- (theta / (theta + pred))^theta
+sum(expected_zero_prob) # about 570 zeroes are expected
+sum(dat$count == 0) # we have 600 zeroes ... it's a bit over what the model expects, let's test whether this is significant
 
-# let's try a zero-inflated model (negative binomial) to see if it's better.
-glm_zinb <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
-                           count ~ depth + depth2 +
-                             size_class +
-                             reef + sand + 
-                             size_class:depth +
-                             size_class:reef + 
-                             size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
-                           dist = "negbin", link = "logit"
-)
-hist(glm_zinb$residuals) # residuals are not perfectly normally-distributed, but good enough for our purposes
-plot(glm_zinb$residuals~glm_zinb$fitted.values) # homogeneity of variance - looks a bit wonky but good enough for our purposes.
+sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb)
+plot(sim_nb)
+DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that our data is not zero-inflated. 
+# we can use a normal negative binomial model to model this data.
 
 
-summary(glm_zinb) # it looks like 2 model outputs
-# count model coefficients (poisson with log link) is basically a normal glm (poisson)
-# zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios.
+## below is archive, when i thought my data was overinflated
 
-# let's test whether the zero-inflated and non-zero-inflated are statistically the same
-pscl::vuong(glm_p, glm_zip) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
+# # zero-inflated models allow you to specify the count model and the zero model. if unspecified, they have the exact same predictors.
+# # for the count model, you need to think about what may influence abundance.
+# # for the zero model, you need to think about what may cause structural zeroes (= in what conditions is it impossible to observe fish)
 
-pscl::vuong(glm_nb, glm_zinb) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
-
-lmtest::lrtest(glm_zip, glm_zinb) # highly significant, the zinb is better. 
-
-summary(glm_zinb)
-
-# the exponentiated coefficients give us the IRR (incidence rate ratio) - i.e. how much more/less likely the expected count is compared to the reference
-exp(coef(glm_zinb))
-
-
-
-### END ###
-
-
-## below is archive ----
-
-## Remove false zeroes in lengths ---------------------------------------------
-
-# Not all fish that are MaxN'ed will be lengthed. Sometimes MaxN is >0, but no fish are lengthed. We need to filter those out.
-
-test <- dat %>% 
-  mutate( # where MaxN is 0 (true 0), length counts are also 0, not NA
-    immature_snapper = ifelse(Total_count == 0, 0, immature_snapper),
-    mature_snapper = ifelse(Total_count == 0, 0, mature_snapper)
-  ) %>% 
-  dplyr::filter(!is.na(immature_snapper)) %>% # all other NAs need to be filtered out.
-  dplyr::select(-c(sample_url))
-
-dat_op1 <- test %>%
-  dplyr::rename(response = Total_count) %>%
-  dplyr::mutate(depth_c = as.numeric(scale(depth_m, center = TRUE, scale = FALSE)),
-                depth2  = depth_c^2, 
-                Location = case_when(
-                  grepl("2024-04_Geographe_stereo-BRUVs", campaignid) ~ "Geographe Bay", 
-                  grepl("2020-06_south-west_stereo-BRUVs", campaignid) ~ "South-West", 
-                  grepl("2020-10_south-west_stereo-BRUVs", campaignid) ~"South-West",
-                  grepl("2023-03_SwC_stereo-BRUVs", campaignid) ~"South-West",
-                  TRUE ~ NA_character_
-                ),
-                Location = factor(Location))
-
-
-
-tidy_all_length <- test %>%
-  pivot_longer(c(immature_snapper, mature_snapper)) %>%
-  dplyr::rename(size_class = name, count = value) %>% 
-  glimpse()
+# # therefore let's try a zero-inflated model (try poisson first)
+# glm_zip <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+#                           count ~ depth + depth2 +
+#                             size_class +
+#                             reef + sand +
+#                             size_class:depth +
+#                             size_class:reef + 
+#                             size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
+#                           dist = "poisson", link = "logit"
+# )
+# summary(glm_zip) # it looks like 2 model outputs
+# # count model coefficients (poisson with log link) is basically a normal glm (poisson) that tells you how much more counts are expected along each predictor.
+# # zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios. not useful for us here, but they account for the zero-inflation.
+# 
+# # let's try a zero-inflated model (negative binomial) to see if it's better.
+# glm_zinb <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+#                            count ~ depth + depth2 +
+#                              size_class +
+#                              reef + sand + 
+#                              size_class:depth +
+#                              size_class:depth2 +
+#                              size_class:reef + 
+#                              size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
+#                            dist = "negbin", link = "logit"
+# )
+# hist(glm_zinb$residuals) # residuals are not perfectly normally-distributed, but good enough for our purposes
+# plot(glm_zinb$residuals~glm_zinb$fitted.values) # homogeneity of variance - looks a bit wonky but good enough for our purposes.
+# 
+# 
+# summary(glm_zinb) # it looks like 2 model outputs
+# # count model coefficients (poisson with log link) is basically a normal glm (poisson)
+# # zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios.
+# 
+# # let's test whether the zero-inflated and non-zero-inflated are statistically the same
+# pscl::vuong(glm_p, glm_zip) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
+# 
+# pscl::vuong(glm_nb, glm_zinb) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
+# AIC(glm_nb, glm_zinb) # AIC of the zinb model is lower than non-zi model, so zinb model is better.
+# 
+# lmtest::lrtest(glm_zip, glm_zinb) # highly significant, the zinb is better. 
+# 
+# summary(glm_zinb)
+# 
+# # the exponentiated coefficients give us the IRR (incidence rate ratio) - i.e. how much more/less likely the expected count is compared to the reference
+# exp(coef(glm_zinb))
 
 
-dat_op2 <- tidy_all_length %>%
-  dplyr::rename(response = count) %>%
-  dplyr::mutate(depth_c = as.numeric(scale(depth_m, center = TRUE, scale = FALSE)),
-                depth2  = depth_c^2, 
-                Location = case_when(
-                  grepl("2024-04_Geographe_stereo-BRUVs", campaignid) ~ "Geographe Bay", 
-                  grepl("2020-06_south-west_stereo-BRUVs", campaignid) ~ "South-West", 
-                  grepl("2020-10_south-west_stereo-BRUVs", campaignid) ~"South-West",
-                  grepl("2023-03_SwC_stereo-BRUVs", campaignid) ~"South-West",
-                  grepl("2024-10_SwC_stereo-BRUVs", campaignid) ~"South-West",
-                  
-                  TRUE ~ NA_character_
-                ),
-                Location = factor(Location),
-                size_class = factor(size_class))
+### 4. Try a GLMM to account for location -------------------------------------
 
+# there is a nested structure to the data (2 sampling sites: GB and SW), which violates the assumption of independence of errors.
+# a GLMM accounts for this with random effects for location (by adding + (1|location)).
 
-## Option 1: does MaxN abundance depend on habitat/depth? ---------------------
+glmm_zinb <- glmmTMB(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+                     count ~ depth + depth2 +
+                       size_class +
+                       reef + sand + 
+                       size_class:depth +
+                       size_class:depth2 +
+                       size_class:reef + 
+                       size_class:sand +
+                       (1 | location), # the random effect accounting for nesting.
+                     family = nbinom2,
+                     ziformula = ~1) # zero inflation model
+summary(glmm_zinb)
+# the model is full of NaN - because 1. there isnt much difference in count between the locations - 2. there aren't enough sites (>5 recommended for GLMM)
+# it could be an over-parameteristion problem but removing effects is not a good move here because we need all those covariates for the purposes of our model.
 
-glimpse(dat_op1)
-
-# Charlotte says: comparing option1 and option2 is not reasonable, (predictors dont predict for differences in measurability)
-# Charlotte also says: it's okay for model assumptions to be a bit shaky given the sample size and the fact that it's ecological data.
-
-## Option 3: does the habitat affinity depend on fish size ? ------------------
-
-glimpse(dat_op2)
-
-
-# first try: lm()
-
-test1 <- lm(data = dat_op2,
-            response ~ depth_c + depth2 + 
-              size_class * (preef.fit + psand.fit + pseagrass.fit) + 
-              Location)
-
-# assumption 1: independence of samples (yes)
-
-# assumption 2: normality of residuals
-hist(test1$residuals) # looks a bit skewed, but not horrible
-
-# assumption 3: homoscedasticity
-plot(test1$residuals ~ test1$fitted.values) # looks a bit skewed, but not horrible
-par(mfrow=c(2,2))
-plot(test1)
-
-# conclusion: assumptions are meh-validated, maybe a glm() would be better
-
-library(statmod)
-
-# second try: glm()
-test2 <- glm(data = dat_op2,
-             response ~ depth_c + depth2 + 
-               size_class * (preef.fit + psand.fit + pseagrass.fit) + 
-               Location,
-             #family = tweedie(link.power=0, var.power = 1)
-             family = quasipoisson(link = "log") # potential? 
-             #family = poisson(link = "log") # not suitable because data is overdispersed (variance > mean)
-             #family = gaussian(link = "identity) # not suitable because our data is not continuous
-             #family = Gamma(link = "inverse) # not suitable because our data is not continuous
-             #family = binomial(link = "logit") # not suitable because our data is not presence/absence
-             )
-
-test2 <- glm.nb(data = dat_op2,
-                response ~ depth_c + depth2 + 
-                  size_class * (preef.fit + psand.fit + pseagrass.fit) + 
-                  Location,
-                )
-
-# assumption 1: independence of samples (yes)
-
-# assumption 2: normality of residuals
-hist(test2$residuals) # looks a bit skewed, but not horrible
-
-# assumption 3: homoscedasticity
-plot(test2$residuals ~ test2$fitted.values) # looks a bit skewed, but not horrible
-
-par(mfrow=c(2,2))
-plot(test2)
-
-summary(test2)
-
-
-
-# test3: simpler glm
-test3 <- glm(data = dat_op2,
-             response ~ depth_c + depth2 + pseagrass.fit,
-             #family = tweedie(link.power=0, var.power = 1)
-             family = quasipoisson(link = "log") # potential? 
-             #family = poisson(link = "log") # not suitable because data is overdispersed (variance > mean)
-             #family = gaussian(link = "identity) # not suitable because our data is not continuous
-             #family = Gamma(link = "inverse) # not suitable because our data is not continuous
-             #family = binomial(link = "logit") # not suitable because our data is not presence/absence
-)
-
-hist(test3$residuals)
-summary(test3)
-
-
-# glmm is not for us, because no random effect (maybe location) ??
-
+# we'll go back to our glm_nb, with the assumption of independence of errors kind of violated-but-not-too-much
+# the large difference in habitat between GB and SW doesn't need to be accounted for in a random effect, because habitat (fixed effects) already capture this difference.
 
 
 
