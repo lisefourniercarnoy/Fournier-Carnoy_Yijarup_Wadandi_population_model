@@ -14,7 +14,7 @@
 
 library(tidyverse) # to manipulate data
 library(ggplot2) # for pretty plots
-library(sf) # to monipulate spatial layers
+library(sf) # to manipulate spatial layers
 
 rm(list = ls()) # Clean working environment
 
@@ -54,10 +54,30 @@ NTZ <-  st_read(file_NTZ) %>%
   st_make_valid()
 plot(NTZ$geometry)
 
+
+# add a commercial closure in the metro area
 water <- readRDS(file_water) %>%
   st_transform(common_crs) %>%
   st_make_valid()
 plot(water)
+
+com_metro_closure <- water %>% 
+  dplyr::filter(type %in% c("shore_north", "offshore_north")) %>% 
+  summarise(geometry = st_union(geometry)) %>%
+  st_sf(geometry = .) %>%  # convert geometry back to sf
+  mutate( # make sure names match with NTZ above
+    X = NA,
+    name = "Metro closure for commercial fleet",
+    zone_type = NA,
+    zone = NA,
+    epbc = NA,
+    commercial = FALSE,
+    boat_rec = TRUE,
+    shore_rec = TRUE,
+    SC_restriction_date = "15/11/2007" # see source : https://www.abc.net.au/news/2007-11-15/commercial-fisherman-angry-about-new-bans/726090 
+  )
+NTZ <- rbind(NTZ, com_metro_closure)
+plot(NTZ$geometry)
 
 
 ## Make a temporal closure area -----------------------------------------------
