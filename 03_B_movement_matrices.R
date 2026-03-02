@@ -142,7 +142,7 @@ connected <- st_combine(c(multilinestrings[[1]], multilinestrings[[2]], multilin
 connected <- st_cast(connected, "LINESTRING") # Needs to be a line string rather than multiline for the next step
 plot(connected)
 
-st_write(connected, "data/output_data/03_network_shapefile.shp", delete_layer = T)
+st_write(connected, "data/output_data/03_B_network_shapefile.shp", delete_layer = T)
 
 
 ## Set up an sf network and a distance matrix ---------------------------------
@@ -188,8 +188,8 @@ summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
 
 ## Save files to use in the next step -----------------------------------------
 
-saveRDS(network_matrix, file = "data/output_data/03_network_matrix.rds")
-saveRDS(water, file="data/output_data/03_water.rds")
+saveRDS(network_matrix, file = "data/output_data/03_B_network_matrix.rds")
+saveRDS(water, file="data/output_data/03_B_water.rds")
 
 ## Create connectivity matrix for fish movement -------------------------------
 
@@ -197,7 +197,7 @@ saveRDS(water, file="data/output_data/03_water.rds")
 # Calculate the probability a fish moves to this site in a given time step using a swimming speed.
 # This creates a dispersal kernel based on the negative exponential distribution.
 
-network_matrix <- readRDS("data/output_data/03_network_matrix.rds")
+network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
 
 pDist <- matrix(NA, ncol=NCELL, nrow=NCELL)
 for(r in 1:NCELL){
@@ -239,8 +239,8 @@ glimpse(p_habitat)
 
 ## Save all the files you need to remake these matrices -----------------------
 
-saveRDS(pDist, "data/output_data/03_pDist.rds")
-saveRDS(p_habitat, "data/output_data/03_p_habitat.rds")
+saveRDS(pDist, "data/output_data/03_B_pDist.rds")
+saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
 
 
 ## Create adult movement probability using utility function -------------------
@@ -260,7 +260,7 @@ list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects int
 
 
 # 2. distance from other cells
-pDist <- readRDS("data/output_data/03_pDist.rds")
+pDist <- readRDS("data/output_data/03_B_pDist.rds")
 
 
 # 3. swimming speed 
@@ -431,7 +431,7 @@ list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects int
 
 
 # 2. distance from other cells
-pDist <- readRDS("data/output_data/03_pDist.rds")
+pDist <- readRDS("data/output_data/03_B_pDist.rds")
 
 
 # 3. swimming speed 
@@ -521,8 +521,8 @@ do.call(grid.arrange, c(plot_list, ncol = 2, nrow = 3))
 
 ## Save files for next step ---------------------------------------------------
 
-saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_adult_movement_", swim_speed_adult, "_swim_speed.rds"))
-saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
-saveRDS(recruitment, "data/output_data/03_recruitment.rds")
+saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_B_adult_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
+saveRDS(recruitment, "data/output_data/03_B_recruitment.rds")
 
 ### END ###
