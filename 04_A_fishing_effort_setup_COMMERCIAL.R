@@ -41,8 +41,8 @@ file_wa           <- "data/output_data/01_B_land.shp"
 file_bathy        <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
 file_boat_ramps_w <- "data/input_data/wadandi_boat_ramps.shp"
 file_boat_ramps_n <- "data/input_data/north_boat_ramps.shp"
-file_water        <- "data/output_data/03_water.rds"
-file_network      <- "data/output_data/03_network_shapefile.shp"
+file_water        <- "data/output_data/03_B_water.rds"
+file_network      <- "data/output_data/03_B_network_shapefile.shp"
 
 year_start <- 1900
 year_end <- 2024
@@ -89,7 +89,7 @@ for (YEAR in 1:dim(water_area)[3]) {
     water_area[, MONTH, YEAR] <- water$cell_area
     
     restricted_cells <- which(
-      !is.na(water$boat_rec) & water$boat_rec == FALSE & # where fleet is not allowed,
+      !is.na(water$commercial) & water$commercial == FALSE & # where fleet is not allowed,
         !is.na(restriction_dates) & current_year >= restriction_dates # and when SC is in place...
     )
     water_area[restricted_cells, MONTH, YEAR] <- 0 # ...the cell is not fishable
@@ -137,6 +137,7 @@ glimpse(st_drop_geometry(water[test_cell, c("TC_status", "SC_status", "boat_rec"
 # check that it is correct
 cat("In month", test_month, "of year", (year_start+test_year-1),
     ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable", "NOT fishable"), "for commercial boats.", "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
+
 
 
 ### 1.b. divide the fishable area by the grid sum area ------------------------
@@ -598,7 +599,10 @@ fishable_long <- st_read("data/output_data/04_A_commercial_fishable_area_over_ti
 
 ## 4. Access point distance to cells ------------------------------------------
 
-## this section (4.) calculates each cell's distance to each access point (boat ramp)
+## this section (4.) calculates each cell's distance to (4.A) each access point (boat ramp) and (4.B) to shore.
+
+
+### 4.a. distance to access points --------------------------------------------
 
 glimpse(BR_n)
 glimpse(BR_w)
@@ -610,20 +614,6 @@ BR <- rbind(BR_n %>% dplyr::select(name, geometry) %>% mutate(region = "north"),
   glimpse()
 
 plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add = TRUE)
-
-st_centroid_within_poly <- function (poly) { # returns true centroid if inside polygon otherwise makes a centroid inside the polygon
-  
-  # check if centroid is in polygon
-  centroid <- poly %>% st_centroid() 
-  in_poly <- st_within(centroid, poly, sparse = F)[[1]] 
-  
-  # if it is, return that centroid
-  if (in_poly) return(centroid) 
-  
-  # if not, calculate a point on the surface and return that
-  centroid_in_poly <- st_point_on_surface(poly) 
-  return(centroid_in_poly)
-}
 
 network <- st_read(file_network); plot(network$geometry)
 BR <- st_as_sf(BR); st_crs(BR) <- NA 
@@ -653,6 +643,7 @@ dim(network_matrix) # number of ramps x number of cells
 glimpse(network_matrix)
 DistBR <- as.data.frame(t(network_matrix))
 colnames(DistBR) <- BR$name
+DistBR$ID <- water$ID
 head(DistBR) # this gives us each cell's distance to the boat ramps
 
 ## sanity check station
@@ -669,6 +660,27 @@ ggplot(water_dist_long) +
 ggsave("plots/checking_plots_during_setup/04_A_commercial_boat_ramp_distance.png", plot = last_plot(), height = 10, width = 10)
 
 
+### 4.b. distance to shore ----------------------------------------------------
+
+shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>% # takes a minute
+  st_make_valid() %>% 
+  st_union() %>% 
+  st_transform(st_crs(water)) %>%  # find shore. we will use this to calculate distance of all cells to shore.
+  st_as_sf()
+
+network <- st_read(file_network); plot(network$geometry)
+
+centroids <- st_centroid(water %>% st_make_valid())
+shore_dist <- st_distance(centroids, shore) / 1000 # distance from shore in km
+shore_dist <- as.data.frame(shore_dist) %>% mutate(ID = water$ID, shore_dist = as.numeric(shore_dist))
+glimpse(shore_dist)
+
+# plot check
+ggplot(data = water %>% dplyr::select(!where(is.list)) %>% mutate(shore_dist = as.numeric(shore_dist$shore_dist))) + 
+  geom_sf(aes(fill = shore_dist), col = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4])
+
+
 ## 5. Create a utility function -----------------------------------------------
 
 ## Now need to create a separate fishing surface for each month of each year based on distance to boat ramp, size of each cell,
@@ -677,7 +689,7 @@ ggsave("plots/checking_plots_during_setup/04_A_commercial_boat_ramp_distance.png
 ## Will then need to put the rows/columns back in as 0s 
 
 # What we want to do is to distribute effort across month and year based on :
-# 1. distance to boat ramp, 2. size of the cell, and 3. whether the cell is 'fishable' that year and 4. fishing effort
+# 1. distance to boat ramp (AND distance from shore), 2. size of the cell, and 3. whether the cell is 'fishable' that year and 4. fishing effort
 # After the SZ comes in the effort will also be redistributed.
 
 years <- year_start:year_end
@@ -692,6 +704,7 @@ ncells <- length(cell_ids)
 # Distance from each cell to each ramp (matrix)
 summary(DistBR$ID == water$ID)# assuming `DistBR` has same row order as `water`
 cell_dist <- DistBR
+cell_dist <- left_join(DistBR, shore_dist, by = "ID") %>% glimpse()
 water_q
 
 saveRDS(cell_dist, "data/output_data/04_A_commercial_cell_dist.rds")
@@ -723,7 +736,7 @@ for (YEAR in seq_along(years)) {
     
     for (RAMP in seq_along(ramps)) {
       ramp_name <- ramps[RAMP]
-      U_mat[, RAMP] <- exp(-Vj_df[[ramp_name]]) * cell_area * Vj_df$fishable_prop # exp(-Vj_df...) because otherwise high utility is given to areas far from ramps
+      U_mat[, RAMP] <- (Vj_df[[ramp_name]]) * cell_area * Vj_df$fishable_prop * Vj_df$shore_dist # exp(Vj_df...) because we want high utility to areas far from ramps. exp(-Vj_df) is for high effort close to ramps
     }
     
     ramp_sums <- colSums(U_mat, na.rm = TRUE)
@@ -737,11 +750,11 @@ head(BR_U_array[,,,70])
 head(water)
 
 ## sanity check plot (utility across all ramps)
-br_slice <- BR_U_array[,,,125]
+br_slice <- BR_U_array[,,,1]
 row_sums <- rowSums(br_slice) # calculate row sums (sum of utilities across ramps for each cell)
 water$utility_sum <- row_sums # add the sums as a new column to the water sf object
 ggplot(water) +
-  geom_sf(aes(fill = log(utility_sum)), color = NA) +
+  geom_sf(aes(fill = (utility_sum)), color = NA) +
   scale_fill_gradientn(colours = colour_palette[6:3]) +
   theme_minimal() +
   theme(legend.position = "right")
@@ -756,11 +769,11 @@ head(utility_check)
 water_catch <- water %>% left_join(utility_check, by = "ID")
 
 water_catch_long <- water_catch %>% pivot_longer(cols = as.character(years), names_to = "year", values_to = "Catchability")
-ggplot(water_catch_long %>% dplyr::filter(year %in% c(1940, 1960, 1980, 2000, 2024))) + 
-  geom_sf(aes(fill = log(Catchability)), color = NA) + 
+ggplot(water_catch_long %>% dplyr::filter(year %in% c(1960, 1980, 2000, 2024))) + 
+  geom_sf(aes(fill = (Catchability)), color = NA) + 
   scale_fill_gradientn(colours = colour_palette[6:4]) +
   facet_wrap(~ year, ncol = 10) + 
-  labs(title = paste0("commercial catchability, \nby cell size, depth-fishability, and \ndistance from ", ramp_check, " ramp"), fill = "log(Catchability)")+
+  labs(title = paste0("commercial catchability, \nby cell size, depth-fishability, shore distance and \ndistance from ", ramp_check, " ramp"))+
   theme_minimal()
 
 ggsave("plots/checking_plots_during_setup/04_A_commercial_boat_ramp_catchability_over_time.png", plot = last_plot(), height = 10, width = 10)
@@ -837,18 +850,18 @@ head(c_fishing)
 
 # plot check
 water
-year_idx <- 125  # first year
+year_idx <- 12  # first year
 month_idx <- 1  # January
 
 effort_vec <- c_fishing[, month_idx, year_idx] # Extract effort vector (one value per cell)
 water$effort <- effort_vec
 
 ggplot(water) +
-  geom_sf(aes(fill = log(effort)), color = NA) +
-  labs(title = paste("Fishing Effort - Year", year_idx, "Month", month_idx),
-       fill = "log Effort") +
+  geom_sf(aes(fill = (effort)), color = NA) +
+  labs(title = paste("Fishing Effort - Year", year_idx, "Month", month_idx)) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
   theme_minimal()
+
 
 ## X. Make a GIF for the laughs -----------------------------------------------
 
