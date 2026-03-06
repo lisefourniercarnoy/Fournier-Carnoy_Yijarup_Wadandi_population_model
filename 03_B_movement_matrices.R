@@ -254,7 +254,12 @@ hab_aff_mod <- readRDS(file_hab_model)
 summary(hab_aff_mod)
 hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model predictors to make a prediction about how many fish we can expect to see in this cell. 
                    newdata = water %>% mutate(depth2 = depth^2,
-                                              size_class = "n_mature"),
+                                              depth_m = depth,
+                                              size_class = "n_mature",
+                                              preef.fit = reef,
+                                              psand.fit = sand,
+                                              pseagrass.fit = seagrass
+                                              ),
                    type = "response")
 list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
 
@@ -274,8 +279,8 @@ a = -(1 / swim_speed_adult)
 
 # from this we can determine the utility of each of the cells.
 # This is very sensitive to changes in the habitat values.
-
-adult_hab_attractivity <- (a * pDist) + hab_aff # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
+class(pDist)
+adult_hab_attractivity <- hab_aff + (a * pDist)# not exponentiating the hab_aff prediction because it inflates values unnecessarily.
 glimpse(adult_hab_attractivity)
 
 # Calculate the summed utility across the rows 
@@ -284,11 +289,13 @@ cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
 cell_utility <- exp(adult_hab_attractivity) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
+
 rowU <- as.data.frame(rowSums(cell_utility))
+summary(rowU)
 
 # quick plot check (looks good)
 water_2 <- water
-water_2$test <- as.numeric(rowU$`rowSums(cell_utility)`)
+water_2$test <- hab_aff
 summary(water_2$test)
 ggplot() +
   geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
@@ -425,7 +432,12 @@ hab_aff_mod <- readRDS(file_hab_model)
 summary(hab_aff_mod)
 hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model predictors to make a prediction about how many fish we can expect to see in this cell. 
                    newdata = water %>% mutate(depth2 = depth^2,
-                                              size_class = "n_mature"),
+                                              depth_m = depth,
+                                              size_class = "n_immature",
+                                              preef.fit = reef,
+                                              psand.fit = sand,
+                                              pseagrass.fit = seagrass
+                                              ),
                    type = "response")
 list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
 
@@ -456,7 +468,7 @@ rowU <- as.data.frame(rowSums(cell_utility))
 
 # quick plot check (looks good)
 water_2 <- water
-water_2$test <- as.numeric(rowU$`rowSums(cell_utility)`)
+water_2$test <- hab_aff
 summary(water_2$test)
 ggplot() +
   geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
