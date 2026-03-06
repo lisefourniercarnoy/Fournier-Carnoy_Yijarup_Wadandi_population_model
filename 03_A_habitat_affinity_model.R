@@ -8,7 +8,7 @@
 
 # -----------------------------------------------------------------------------
 
-# Status:  Did a good first try, need to see what soops says
+# Status:  Finished, clean code, all good.
 
 # -----------------------------------------------------------------------------
 
@@ -35,10 +35,12 @@ file_sw_lengths <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/202
 file_gb_metadata <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
 file_sw_metadata <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Metadata.csv"
 
+file_pred_hab <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
+
 
 ## Load data ------------------------------------------------------------------
 
-# Habitat
+# Habitat (observed)
 hab_gb <- readRDS(file_gb_obs_habitat) %>% 
   mutate(sand = sand/total_pts, # standardise habitat
          reef = reef/total_pts,
@@ -56,7 +58,22 @@ hab_sw <- readRDS(file_sw_obs_habitat) %>%
 hab <- rbind(hab_gb, hab_sw)
 
 
+# Habitat (predicted)
+pred_hab <- readRDS(file_pred_hab) %>% 
+  glimpse()
+
+# combine predicted and observed habitats
+hab_sf <- st_as_sf(hab)
+hab_vect <- vect(hab_sf)
+test <- terra::extract(pred_hab, hab_vect)
+
+test2 <- cbind(hab, test) %>% dplyr::select(-ID)
+glimpse(test2)
+hab <- test2
+
+
 # Lengths
+length_split <- 375 
 length_gb <- read.table(
   file_gb_lengths,
   header = TRUE,
@@ -67,8 +84,8 @@ length_gb <- read.table(
   dplyr::filter(Species == "auratus") %>% 
   group_by(OpCode) %>% 
   summarise(
-    n_mature   = sum(Length > 660, na.rm = TRUE),
-    n_immature = sum(Length <= 660, na.rm = TRUE),
+    n_mature   = sum(Length > length_split, na.rm = TRUE),
+    n_immature = sum(Length <= length_split, na.rm = TRUE),
     total   = n(),
     .groups = "drop"
   ) %>% 
@@ -85,8 +102,8 @@ length_sw <- read.table(
   dplyr::filter(Species == "auratus") %>% 
   group_by(OpCode) %>% 
   summarise(
-    n_mature   = sum(Length > 660, na.rm = TRUE),
-    n_immature = sum(Length <= 660, na.rm = TRUE),
+    n_mature   = sum(Length > length_split, na.rm = TRUE),
+    n_immature = sum(Length <= length_split, na.rm = TRUE),
     total   = n(),
     .groups = "drop"
   ) %>% 
@@ -94,7 +111,6 @@ length_sw <- read.table(
   glimpse()
 
 length <- rbind(length_gb, length_sw)
-
 
 # Add metadata back into it
 meta_gb <- read.csv(file_gb_metadata, sep = ",", header = T, fill = T) %>% 
@@ -120,61 +136,25 @@ glimpse(length)
 dat <- left_join(metadata, hab, by = "opcode") %>% 
   dplyr::filter(!is.na(reef)) %>% # remove rows with missing habitat
   glimpse()
-dat <- left_join(dat, length, by = "opcode") %>% 
-  glimpse()
+dat <- left_join(dat, length, by = "opcode")
 
 dat[is.na(dat)] <- 0 # fill NAs with true zeroes 
+
+glimpse(dat)
+
 
 dat <- dat %>%
   pivot_longer(c(n_mature, n_immature)) %>%
   dplyr::rename(size_class = name, count = value) %>% 
   dplyr::select(!c("total")) %>% 
-  mutate(location = ifelse(grepl("GB", opcode), "GB", "SW")) %>% 
   glimpse()
 
 saveRDS(dat, file = "data/output_data/03_A_habitat_affinity_outputs/03_A_tidy_data.rds")
-
-## Explore the data -----------------------------------------------------------
-
-glimpse(dat)
-
-## test
-# following Harrison et al. 2018 - https://peerj.com/articles/4794/#p-36
-
-glimpse(dat)
-
-par(mfrow = c(2, 2))
-plot(dat$count ~ dat$reef)
-plot(dat$count ~ dat$sand)
-plot(dat$count ~ dat$seagrass)
-
-ggplot(dat, aes(x = reef, y = count)) + 
-  geom_point(alpha = 0.2) +
-  facet_grid(location~size_class) +
-  geom_smooth(method = lm, se = T) +
-  ggtitle("reef")
-ggplot(dat, aes(x = sand, y = count)) + 
-  geom_point(alpha = 0.2) +
-  facet_grid(location~size_class) +
-  geom_smooth(method = lm, se = T) +
-  ggtitle("sand")
-ggplot(dat, aes(x = seagrass, y = count)) + 
-  geom_point(alpha = 0.2) +
-  facet_grid(location~size_class) +
-  geom_smooth(method = lm, se = T) +
-  ggtitle("seagrass")
-
-ggplot(dat, aes(x = depth, y = count)) + 
-  geom_point(alpha = 0.2) +
-  facet_grid(location~size_class) +
-  geom_smooth(method = lm, se = T) +
-  ggtitle("depth")
 
 
 ## Actually try some models ---------------------------------------------------
 
 ## the aim of the analysis is to understand the relative affinity of mature and immature snapper to different habitat
-# dat$depth <- scale(dat$depth) # center + scale depth # i think this may be breaking the prediction later.
 dat$depth2 <- dat$depth^2 # square depth
 
 # check for correlation between predictors. nothing should be above 0.7.
@@ -182,7 +162,8 @@ cor <- dat %>%
   dplyr::select(depth, depth2, sand, reef, seagrass) %>%
   cor(use = "complete.obs")
 corrplot::corrplot(cor, addCoef.col = T)
-# we're all good here
+# we're all good here (nothing over 0.7 except for depth and depth2 which is okay)
+
 
 ### 1. try the Poisson distribution -------------------------------------------
 glm_p <- glm(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
@@ -204,42 +185,63 @@ var(glm_p$residuals) # lol very much not. var>mean, overdispersion detected.
 
 ### 2. try the Negative Binomial distribution ---------------------------------
 
-glm_nb <- glm.nb(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+# using the observed habitat from the BRUVs annotation.
+# for now we'll use the model with predicted habitat. keeping this here in case we need later.
+# glm_nb <- glm.nb(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+#                  count ~ depth + depth2 +
+#                    size_class +
+#                    reef + sand +
+#                    size_class:depth +
+#                    size_class:depth2 +
+#                    size_class:reef + 
+#                    size_class:sand # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
+# )
+# 
+# summary(glm_nb) # notice Theta: Theta = 1/dispersion parameter. It's meant to capture the dispersion
+# 1/glm_nb$theta # this is the dispersion parameter
+# 
+# # likelihood ratio test: is the nb model sig better than the poisson model
+# lmtest::lrtest(glm_p, glm_nb) # very much significant. this justifies the use of the nb model.
+# 
+# 
+# # have a look at the diagnostics
+# par(mfrow = c(2, 2))
+# plot(glm_nb) # that looks decent
+# 
+# summary(glm_nb)
+# saveRDS(glm_nb, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds")
+
+
+# try predicted habitat
+glm_nb_p <- glm.nb(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
                  count ~ depth + depth2 +
                    size_class +
-                   reef + sand +
+                   preef.fit + psand.fit +
                    size_class:depth +
                    size_class:depth2 +
-                   size_class:reef + 
-                   size_class:sand # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
+                   size_class:preef.fit + 
+                   size_class:psand.fit # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
 )
-summary(glm_nb) # notice Theta: Theta = 1/dispersion parameter. It's meant to capture the dispersion
-1/glm_nb$theta # this is the dispersion parameter
 
-# likelihood ratio test: is the nb model sig better than the poisson model
-lmtest::lrtest(glm_p, glm_nb) # very much significant. this would justify the use of nb model.
-
-
-# however the diagnostics look criminal so we'll try a zero-inflated model
+# have a look at the diagnostics
 par(mfrow = c(2, 2))
-plot(glm_nb) #top left has 2 clouds (instead of a single shapeless cloud), qq-plot is not sitting on the line...
+plot(glm_nb_p) # that looks decent
 
-summary(glm_nb)
-saveRDS(glm_nb, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds")
+summary(glm_nb_p) 
+saveRDS(glm_nb_p, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds") # AS OF 06/03/2026 I AM USING THIS MODEL. 
 
-# AS OF 02/03/2026 I AM USING THE ABOVE MODEL. 
 
 ### 3. test for zero-inflation ------------------------------------------------
 
 # BRUV data may be zero-inflated (more zeroes than expected)
 # we will test for zero-inflation by calculating how many zeroes our model expects
-pred <- predict(glm_nb, type = "response")
-theta <- sigma(glm_nb)
+pred <- predict(glm_nb_p, type = "response")
+theta <- sigma(glm_nb_p)
 expected_zero_prob <- (theta / (theta + pred))^theta
-sum(expected_zero_prob) # about 570 zeroes are expected
+sum(expected_zero_prob) # about 540 zeroes are expected
 sum(dat$count == 0) # we have 600 zeroes ... it's a bit over what the model expects, let's test whether this is significant
 
-sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb)
+sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb_p)
 plot(sim_nb)
 DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that our data is not zero-inflated. 
 # we can use a normal negative binomial model to model this data.
