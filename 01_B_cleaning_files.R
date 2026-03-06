@@ -223,7 +223,7 @@ buf <- st_read("data/output_data/Q_buffer_empty_mainland.shp") %>%  # file saved
 plot(buf$geometry)
 
 water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col = NA, border = "red", lwd = 2)
-water_offshore_polygon <- st_difference(water_polygon, st_union(buf)); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
+water_offshore_polygon <- st_difference(water_polygon, st_union(buf)) %>% st_transform(common_crs); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
 
 ## over north area
@@ -235,7 +235,11 @@ small_grd_north <- st_intersection(small_grd_north, buf) %>%
   st_make_valid() %>%
   st_transform(common_crs) %>% 
   dplyr::select(x)
-plot(small_grd_north)
+
+small_grd_north <- st_intersection(small_grd_north, bbox_north) %>% 
+  st_as_sf() %>% 
+  st_collection_extract("POLYGON"); plot(small_grd_north)
+
 small_grd_north$type <- "shore_north"
 
 
@@ -248,25 +252,32 @@ small_grd_wadandi <- st_intersection(small_grd_wadandi, buf) %>%
   st_make_valid() %>%
   st_transform(common_crs) %>% 
   dplyr::select(x)
-plot(small_grd_wadandi)
+
+small_grd_wadandi <- st_intersection(small_grd_wadandi, bbox_wadandi) %>% 
+  st_as_sf() %>% 
+  st_collection_extract("POLYGON"); plot(small_grd_wadandi)
+
 small_grd_wadandi$type <- "shore_wadandi"
 
 
 ### 2. Offshore cells ---------------------------------------------------------
 
-# large cells over north offshore and wadandi cells >100m depth
+# large cells over north offshore cells.
 
 ## over north cells
 hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
 plot(hab_north)
 
-big_grd_north <- st_make_grid(bbox_north, cellsize = 10000, square = T); plot(big_grd_north) # 10000m x 10000m square, or 100km2
+big_grd_north <- st_make_grid(bbox_north, cellsize = 10000, square = T) %>% st_transform(common_crs); plot(big_grd_north) # 10000m x 10000m square, or 100km2
 
 big_grd_north <- st_intersection(big_grd_north, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
   st_make_valid() %>%
-  st_transform(common_crs); plot(big_grd_north)
+  st_transform(common_crs)
 
-big_grd_north <- st_as_sf(big_grd_north)
+big_grd_north <- st_intersection(big_grd_north, bbox_north) %>% 
+  st_as_sf() %>% 
+  st_collection_extract("POLYGON"); plot(big_grd_north)
+
 big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
 
 big_grd_north$type <- "offshore_north"
@@ -276,11 +287,15 @@ big_grd_north$type <- "offshore_north"
 hab_wadandi <- crop(hab, st_transform(bbox_wadandi, crs(hab)))
 plot(hab_wadandi)
 
-big_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 4000, square = T); plot(big_grd_wadandi) # 4000m x 4000m square, or 16km2
+big_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 4000, square = T) %>% st_transform(common_crs); plot(big_grd_wadandi) # 4000m x 4000m square, or 16km2
 
 big_grd_wadandi <- st_intersection(big_grd_wadandi, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
   st_make_valid() %>%
-  st_transform(common_crs); plot(big_grd_wadandi)
+  st_transform(common_crs)
+
+big_grd_wadandi <- st_intersection(big_grd_wadandi, bbox_wadandi) %>% 
+  st_as_sf() %>% 
+  st_collection_extract("POLYGON"); plot(big_grd_wadandi)
 
 big_grd_wadandi <- st_as_sf(big_grd_wadandi)
 big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plot(big_grd_wadandi)
@@ -290,27 +305,16 @@ big_grd_wadandi$type <- "offshore_wadandi"
 
 ### 3. Merge all grids together -----------------------------------------------
 
-
 # merge the big and small grids together
 shore_grd <- rbind(small_grd_north, small_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(shore_grd)
 offshore_grd <- rbind(big_grd_north, big_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(offshore_grd)
 
 full_grd <- rbind(shore_grd, offshore_grd) %>% st_transform(common_crs) %>% st_crop(bbox_whole) %>% st_make_valid(); plot(full_grd)
 
-# check in qgis to make sure things are where you want em.
-# full_grd <- st_collection_extract(full_grd, "POLYGON")
-# full_grd <- st_cast(full_grd, "POLYGON")
-# st_write(full_grd, "data/output_data/01_B_test_grid.shp", append = F)
-
-
-# transform into a vector for use later
-full_grd <- full_grd[st_geometry_type(full_grd) %in% c("POLYGON", "MULTIPOLYGON"), ] %>%  # remove problematic geometries
-  st_make_valid()
-
 water_vect <- vect(full_grd) %>% project("EPSG:4326"); plot(water_vect)
-water_sf <- st_as_sf(water_vect) %>% 
+water_sf <- full_grd %>% 
   st_make_valid() %>% 
-  st_cast("POLYGON") %>% 
+  st_cast("MULTIPOLYGON") %>%  # cast to MULTIPOLYGON to preserve complex geometry
   st_transform(common_crs)
 
 # remove grid cells southeast of black point
@@ -325,10 +329,10 @@ plot(grd_final)
 
 # Check the grid
 ggplot(data = grd_final) +
-  geom_sf(color = colour_palette[2]) +
+  geom_sf(color = colour_palette[2], fill = NA) +
   theme_minimal()
 
-# save the grid and clean up in QGIS (removing shore cells that don't perfectly align with the large grids, at the north and south extremeties)
+# save the grid and clean up in QGIS (removing shore cells that don't perfectly align with the large grids, at the south extremity)
 st_write(grd_final, "data/output_data/01_B_grid_to_cleanup.shp", append = F)
 grd_final <- st_read("data/output_data/Q_grid_cleaned_up_01_B.shp")
 
