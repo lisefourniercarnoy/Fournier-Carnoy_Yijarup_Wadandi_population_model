@@ -52,7 +52,7 @@ st_centroid_within_poly <- function (poly) { # This returns the centre of the pl
 water <- readRDS(file_water) %>% 
   st_make_valid()
 
-bathy <- raster::raster(file_bathy); plot(bathy)
+bathy <- raster::raster(file_bathy)#; plot(bathy)
 
 # extract 
 water$depth <- exactextractr::exact_extract(
@@ -306,11 +306,7 @@ ggplot() +
 
 # Calculate the probability that the fish will move to this site
 adult_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
-for (r in 1:NCELL){
-  for (c in 1:NCELL){
-    adult_cell_movement_probability[r, c] <- (exp(adult_hab_attractivity[r, c]))/rowU[r, 1]
-  }
-} # this loop calculates the probability of moving to a certain cell based on all other possible moves.
+adult_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
 rowSums(adult_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
 sum(is.na(adult_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
 adult_cell_movement_probability[1:10, 1:10]
@@ -537,4 +533,5 @@ saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_B_adult_mov
 saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
 saveRDS(recruitment, "data/output_data/03_B_recruitment.rds")
 
+test <- readRDS( paste0("data/output_data/03_B_adult_movement_10_swim_speed.rds"))
 ### END ###
