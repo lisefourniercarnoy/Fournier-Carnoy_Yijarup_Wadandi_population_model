@@ -65,7 +65,7 @@ pred_hab <- readRDS(file_pred_hab) %>%
 # combine predicted and observed habitats
 hab_sf <- st_as_sf(hab)
 hab_vect <- vect(hab_sf)
-test <- terra::extract(pred_hab, hab_vect)
+test <- terra::extract(terra::unwrap(pred_hab), hab_vect)
 
 test2 <- cbind(hab, test) %>% dplyr::select(-ID)
 glimpse(test2)
@@ -111,6 +111,7 @@ length_sw <- read.table(
   glimpse()
 
 length <- rbind(length_gb, length_sw)
+
 
 # Add metadata back into it
 meta_gb <- read.csv(file_gb_metadata, sep = ",", header = T, fill = T) %>% 
