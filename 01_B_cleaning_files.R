@@ -184,6 +184,7 @@ reef_combined_clean <- mask(reef_combined, sand_mask, maskvalues = TRUE, updatev
 hab_raster <- c(sand_combined, reef_combined_clean, seagrass_combined)
 hab_raster <- crop(hab_raster, st_transform(bbox_whole, crs(hab_raster))); plot(hab_raster)
 
+saveRDS(hab_raster, "data/output_data/01_B_full_habitat_raster.rds")
 
 ## Make grid cells ------------------------------------------------------------
 
