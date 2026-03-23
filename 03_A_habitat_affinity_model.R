@@ -32,6 +32,9 @@ file_sw_obs_habitat <- "data/input_data/habitat_affinity/D01_waatu_tidy_habitat.
 file_gb_lengths <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Lengths.txt"
 file_sw_lengths <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Lengths.txt"
 
+file_gb_maxn <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Points.txt"
+file_sw_maxn <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Points.txt"
+
 file_gb_metadata <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
 file_sw_metadata <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Metadata.csv"
 
@@ -39,6 +42,8 @@ file_pred_hab <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
 
 
 ## Load data ------------------------------------------------------------------
+
+# load habitat, lengths, metadata, and maxn, then remove false zeroes from the dataset
 
 # Habitat (observed)
 hab_gb <- readRDS(file_gb_obs_habitat) %>% 
@@ -112,7 +117,6 @@ length_sw <- read.table(
 
 length <- rbind(length_gb, length_sw)
 
-
 # Add metadata back into it
 meta_gb <- read.csv(file_gb_metadata, sep = ",", header = T, fill = T) %>% 
   dplyr::select(
@@ -142,13 +146,64 @@ dat <- left_join(dat, length, by = "opcode")
 dat[is.na(dat)] <- 0 # fill NAs with true zeroes 
 
 glimpse(dat)
-
+length_zeroes <- unique(dat$opcode[dat$total == 0]) # opcodes where no fish were lengthed
 
 dat <- dat %>%
   pivot_longer(c(n_mature, n_immature)) %>%
   dplyr::rename(size_class = name, count = value) %>% 
   dplyr::select(!c("total")) %>% 
   glimpse()
+
+
+# okay now find true zeroes
+maxn_gb <- read.table(
+  file_gb_maxn,
+  header = TRUE,
+  sep = "\t",
+  fill = TRUE,
+  stringsAsFactors = FALSE
+) %>% 
+  dplyr::filter(Species == "auratus") %>% 
+  mutate(opcode = OpCode) %>% 
+  group_by(opcode, Frame) %>% 
+  summarise(maxn = sum(Number)) %>% 
+  glimpse() 
+
+maxn_sw <- read.table(
+  file_sw_maxn,
+  header = TRUE,
+  sep = "\t",
+  fill = TRUE,
+  stringsAsFactors = FALSE
+) %>% 
+  dplyr::filter(Species == "auratus") %>% 
+  mutate(opcode = OpCode) %>% 
+  group_by(opcode, Frame) %>% 
+  summarise(maxn = sum(Number)) %>% 
+  glimpse()
+
+maxn <- rbind(maxn_gb, maxn_sw) %>% 
+  full_join(metadata, by = "opcode") %>% 
+  mutate(maxn = replace_na(maxn, 0)) %>%  # fill true zeroes
+  group_by(opcode) %>% 
+  slice_max(maxn, n = 1, with_ties = TRUE) %>%  # more robust than filter(maxn == max(maxn))
+  glimpse()
+
+# find false zeroes
+length_zeroes # opcodes where no fish were lengthed
+true_zeroes <- unique(maxn$opcode[maxn$maxn == 0]) # opcodes with no fish counted
+
+false_zeroes <- setdiff(length_zeroes, true_zeroes) # opcodes where fish were counted, but not lengthed
+
+# check that these are actually false zeroes
+dat[dat$opcode %in% false_zeroes,]
+maxn[maxn$opcode %in% false_zeroes,]
+
+# remove these opcodes from the big data
+dat2 <- dat %>% 
+  dplyr::filter(!opcode %in% false_zeroes)
+length(unique(dat$opcode))
+length(unique(dat2$opcode))
 
 saveRDS(dat, file = "data/output_data/03_A_habitat_affinity_outputs/03_A_tidy_data.rds")
 
