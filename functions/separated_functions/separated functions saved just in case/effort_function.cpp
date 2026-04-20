@@ -1,4 +1,3 @@
-
 Rcpp::List distribute_effort_function(
     // to select current point in time - the master function fills this.
     const int MONTH, 

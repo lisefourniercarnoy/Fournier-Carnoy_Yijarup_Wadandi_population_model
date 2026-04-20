@@ -1,4 +1,3 @@
-
 Rcpp::List recruitment_function(
     const int MONTH,            // current spawning month
     const int max_cell,          // number of cells in the grid

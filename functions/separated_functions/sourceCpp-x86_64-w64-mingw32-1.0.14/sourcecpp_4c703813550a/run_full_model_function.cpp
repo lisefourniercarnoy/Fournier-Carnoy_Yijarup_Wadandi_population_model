@@ -2,38 +2,44 @@
 //[[Rcpp::depends(RcppArmadillo)]]
 
 
-#include "internals/effort_function.h"
-#include "internals/mortality_function.h"
-#include "internals/pseudo_effort_function.h"
-#include "internals/recruitment_function.h"
-#include "internals/movement_function.h"
+#include "internals/test_function.cpp"
 
 
 // [[Rcpp::export]]
+int test_wrapper(int x) {
+  return add_one(x);
+}
+
+// [[Rcpp::export]]
 Rcpp::List run_full_model_function(
-    
+    // setup inputs - used for multiple functions
     const int YEAR,
     const int max_cell,
     const int max_age,
     const int max_year,
     
-    arma::cube yearly_pop,
-    arma::mat weight,
+    // inputs for multiple functions 
+    arma::cube yearly_pop,              // numbers of fish in each cell x month x age
+    arma::mat weight,                   // age x month matrix of the weight of a fish of each age over months over 12 months.
     arma::cube selectivity,
     const double natural_mortality,
     
-    arma::vec spawning_months,
-    const double BHa,
-    const double BHb,
-    const double PF,
-    const double ha_scaling,
-    arma::mat maturity, 
-    arma::vec settlement,
+    // inputs for recruitment function
+    arma::vec spawning_months,          // vector of months, numbered (1-indexed, so january = 1)
+    const double BHa,                   // Beverton-Holt parameter 
+    const double BHb,                   // Beverton-Holt parameter
+    const double PF,                    // proportion of females 
+    const double ha_scaling,            // hyperallometry scaling factor
+    arma::mat maturity,                 // age x month matrix of the proportion of the population to be mature over 12 months.
+    arma::vec settlement,               // vector of size max_cell giving probability of recruiting in each cell (based on habitat etc.)
     
-    arma::mat adult_movement_prob,
+    // inputs for movement function
+    arma::mat adult_movement_prob,      // adult movement probabilities (from each cell to each cell)
     
-    Rcpp::CharacterVector fleet_names,
-    Rcpp::List fleet_info
+    // inputs for effort distribution
+    Rcpp::CharacterVector fleet_names,  // c("commercial", "boat_rec", "shore_rec")
+    Rcpp::List fleet_info               // a list with objects of different shapes that contain information relevant to the distribution of each fleet.
+
 ) {
   
   
@@ -63,7 +69,6 @@ Rcpp::List run_full_model_function(
   
   for (int MONTH = 0; MONTH < 12; MONTH++) { 
     
-    Rcpp::Rcout << "Year: " << YEAR+1 << ", Month: " << MONTH+1 << std::endl;
     
     // 1. figure out where high CPUE was in the previous month ------------------
     
@@ -90,6 +95,7 @@ Rcpp::List run_full_model_function(
       
     } // for all months and years after y1 m1, use the previous month's catch and effort distribution to obtain pseudo catch for this month
     
+    
     // 2. move fish -------------------------------------------------------------
     
     for (int AGE = 0; AGE < max_age; AGE++) { 
@@ -101,12 +107,12 @@ Rcpp::List run_full_model_function(
                                                      yearly_pop);
       
       yearly_pop.slice(AGE).col(MONTH) = moved_population; // cell x month x age
-
-      } // for every aged fish, move them to another spot
+      
+    } // for every aged fish, move them to another spot
     
     
     // 3. distribute effort -----------------------------------------------------
-
+    
     Rcpp::List effort_distribution_output = distribute_effort_function(MONTH,
                                                                        YEAR,
                                                                        max_cell,
@@ -127,13 +133,12 @@ Rcpp::List run_full_model_function(
     } // record how much fishing there is this month and where.
     
     
-    
     // 4. kill fish -------------------------------------------------------------
     
     for (int FLEET = 0; FLEET < n_fleets; FLEET++) { // reset the catch_weight
       catch_weight[FLEET] = arma::vec(max_cell, arma::fill::zeros);
     }
-
+    
     for (int AGE = 0; AGE < max_age; AGE++) {
       
       Rcpp::List mortality_outputs = mortality_function(AGE,
@@ -149,21 +154,6 @@ Rcpp::List run_full_model_function(
       
       // also fill the master outputs
       arma::vec survived = Rcpp::as<arma::vec>(mortality_outputs["tot_survived"]);
-      
-      //test
-      double max_surv = survived.max();
-      double sum_surv = arma::sum(survived);
-      
-      if (!arma::is_finite(max_surv) || max_surv > 1e10) {
-        Rcpp::Rcout << "⚠️ EXPLOSION at AGE=" << AGE
-                    << " MONTH=" << MONTH
-                    << " max_surv=" << max_surv
-                    << " sum_surv=" << sum_surv
-                    << std::endl;
-        Rcpp::stop("Numerical explosion detected");
-      }
-      //end test
-      
       master_pop_survived.slice(AGE).col(MONTH) = survived;
       
       // extract the catch
@@ -182,6 +172,7 @@ Rcpp::List run_full_model_function(
       } // record how much catch there is this month and where.
       
       
+      
       if (MONTH < 11) {
         if (AGE < (max_age - 1)) {
           yearly_pop.slice(AGE).col(MONTH + 1) = survived;
@@ -189,18 +180,18 @@ Rcpp::List run_full_model_function(
       } else if (MONTH == 11) {
         if (AGE < (max_age - 1)) {
           yearly_pop.slice(AGE + 1).col(0) = survived;
-        } 
+        }
       } // in december, age-up the fish, or assign this population to the next month for all other months. skip the oldest fish, who aren't taken into account anymore.
       
     }
-
+    
     
     // 5. recruit fish ----------------------------------------------------------
-
+    
     arma::uvec spawn_check = arma::find(spawning_months - 1 == MONTH);
-
+    
     if (spawn_check.n_elem > 0) { // if it's spawning month...
-
+      
       Rcpp::List recruitment_outputs = recruitment_function(MONTH,          // current spawning month
                                                             max_cell,       // number of cells in the grid
                                                             max_age,        // oldest age of the species
@@ -213,13 +204,9 @@ Rcpp::List run_full_model_function(
                                                             settlement,     // vector of size max_cell giving probability of recruiting in each cell (based on habitat etc.)
                                                             yearly_pop      // numbers of fish in each cell x month x age
       );
-
+      
       arma::vec settle_recs = recruitment_outputs["settle_recs"];
       january_recruits += settle_recs; // sum the recruits of all spawning months
-      Rcpp::Rcout << "Spawning MONTH=" << MONTH 
-                  << " sum(settle_recs)=" << arma::sum(settle_recs)
-                  << " sum(january_recruits)=" << arma::sum(january_recruits)
-                  << std::endl;
     }
     
   } // end of the MONTH loop
@@ -229,11 +216,58 @@ Rcpp::List run_full_model_function(
   return Rcpp::List::create(
     
     // also add master outputs
-    Rcpp::Named("yearly_pop") = yearly_pop, // outputs - 
+    Rcpp::Named("YearlyTotal") = yearly_pop, // outputs - 
     
     Rcpp::Named("catch_number_by_fleet") = master_catch_number_total, // cell x month x fleet
     Rcpp::Named("catch_weight_by_fleet") = master_catch_weight_total, // cell x month x fleet
     Rcpp::Named("master_pop_survived") = master_pop_survived // cell x month x age
   
   );
+}
+
+
+#include <Rcpp.h>
+#ifdef RCPP_USE_GLOBAL_ROSTREAM
+Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
+Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
+#endif
+
+// test_wrapper
+int test_wrapper(int x);
+RcppExport SEXP sourceCpp_1_test_wrapper(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(test_wrapper(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// run_full_model_function
+Rcpp::List run_full_model_function(// setup inputs - used for multiple functions     const int YEAR, const int max_cell, const int max_age, const int max_year, // inputs for multiple functions      arma::cube yearly_pop, arma::mat weight, arma::cube selectivity, const double natural_mortality, // inputs for recruitment function     arma::vec spawning_months, const double BHa, const double BHb, const double PF, const double ha_scaling, arma::mat maturity, arma::vec settlement, // inputs for movement function     arma::mat adult_movement_prob, // inputs for effort distribution     Rcpp::CharacterVector fleet_names, Rcpp::List fleet_info);
+RcppExport SEXP sourceCpp_1_run_full_model_function(SEXP YEARSEXP, SEXP max_cellSEXP, SEXP max_ageSEXP, SEXP max_yearSEXP, SEXP yearly_popSEXP, SEXP weightSEXP, SEXP selectivitySEXP, SEXP natural_mortalitySEXP, SEXP spawning_monthsSEXP, SEXP BHaSEXP, SEXP BHbSEXP, SEXP PFSEXP, SEXP ha_scalingSEXP, SEXP maturitySEXP, SEXP settlementSEXP, SEXP adult_movement_probSEXP, SEXP fleet_namesSEXP, SEXP fleet_infoSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< // setup inputs - used for multiple functions     const int >::type YEAR(YEARSEXP);
+    Rcpp::traits::input_parameter< const int >::type max_cell(max_cellSEXP);
+    Rcpp::traits::input_parameter< const int >::type max_age(max_ageSEXP);
+    Rcpp::traits::input_parameter< const int >::type max_year(max_yearSEXP);
+    Rcpp::traits::input_parameter< // inputs for multiple functions      arma::cube >::type yearly_pop(yearly_popSEXP);
+    Rcpp::traits::input_parameter< arma::mat >::type weight(weightSEXP);
+    Rcpp::traits::input_parameter< arma::cube >::type selectivity(selectivitySEXP);
+    Rcpp::traits::input_parameter< const double >::type natural_mortality(natural_mortalitySEXP);
+    Rcpp::traits::input_parameter< // inputs for recruitment function     arma::vec >::type spawning_months(spawning_monthsSEXP);
+    Rcpp::traits::input_parameter< const double >::type BHa(BHaSEXP);
+    Rcpp::traits::input_parameter< const double >::type BHb(BHbSEXP);
+    Rcpp::traits::input_parameter< const double >::type PF(PFSEXP);
+    Rcpp::traits::input_parameter< const double >::type ha_scaling(ha_scalingSEXP);
+    Rcpp::traits::input_parameter< arma::mat >::type maturity(maturitySEXP);
+    Rcpp::traits::input_parameter< arma::vec >::type settlement(settlementSEXP);
+    Rcpp::traits::input_parameter< // inputs for movement function     arma::mat >::type adult_movement_prob(adult_movement_probSEXP);
+    Rcpp::traits::input_parameter< // inputs for effort distribution     Rcpp::CharacterVector >::type fleet_names(fleet_namesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::List >::type fleet_info(fleet_infoSEXP);
+    rcpp_result_gen = Rcpp::wrap(run_full_model_function(YEAR, max_cell, max_age, max_year, yearly_pop, weight, selectivity, natural_mortality, spawning_months, BHa, BHb, PF, ha_scaling, maturity, settlement, adult_movement_prob, fleet_names, fleet_info));
+    return rcpp_result_gen;
+END_RCPP
 }

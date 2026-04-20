@@ -1,4 +1,3 @@
-
 Rcpp::List mortality_function(
     // to select current point in time - the master function fills this.
     const int AGE, 
@@ -37,7 +36,8 @@ Rcpp::List mortality_function(
 
   // 2. calculate total survived fish (not fleet-specific)
   arma::vec Z             = total_f + natural_m;
-  arma::vec tot_survived  = N % arma::exp(-total_f) * std::exp(-natural_m); 
+  Z.replace(0, 1e-10); // prevent division by zero
+  arma::vec tot_survived  = N % arma::exp(-Z); 
   
   
   // 3. calculate fleet-specific Baranov catch

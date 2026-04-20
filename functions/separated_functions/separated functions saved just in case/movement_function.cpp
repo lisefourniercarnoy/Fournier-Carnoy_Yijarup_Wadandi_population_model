@@ -1,4 +1,3 @@
-
 arma::vec movement_function(const int AGE,                 // the current age
                             const int MONTH,               // the current month
                             const int max_cell,             // the max number of cells
@@ -19,5 +18,3 @@ arma::vec movement_function(const int AGE,                 // the current age
   
   return pop_after;
 }
- // MAKE SURE THAT VARIABLE VALUES MATCH THROUGHOUT THE MASTER CODE !!! 
- // THIS IS CURRENTLY NEW VARNAMES THAT WILL NOT WORK IF THE FUNCTION IS COPY PASTED
