@@ -36,7 +36,7 @@ Rcpp::List recruitment_function(
   
   // Standard BH on the hyperallometry-adjusted spawning output
   double tot_recs_before_var = total_female_SB / (BHa + BHb * total_female_SB);
-  double tot_recs = tot_recs_before_var * exp(R::rnorm(0, 0.6) - (0.5 * 0.6 * 0.6));
+  double tot_recs = tot_recs_before_var * exp(R::rnorm(0, 0.5) - (0.5 * 0.6 * 0.6));
   
   arma::vec settle_recs = settlement * tot_recs;
 

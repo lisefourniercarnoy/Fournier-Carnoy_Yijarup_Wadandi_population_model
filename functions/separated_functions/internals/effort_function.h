@@ -53,11 +53,15 @@ Rcpp::List distribute_effort_function(
     for(int access_point = 0; access_point < n_access_points; access_point++) {
       
       // 2.A. figure out coefficients
+      
+      arma::vec util_now_vec = cell_utility_now.col(access_point);
+      util_now_vec.replace(0, 1e-10); // replace zeros before log
+      
       arma::vec cell_coefficent_here_now = // Charlotte's CellCoef
-        cell_utility_now.col(access_point) * Rcpp::as<Rcpp::NumericVector>(coef_values["utility"])[0] +
+        arma::log(util_now_vec) * Rcpp::as<Rcpp::NumericVector>(coef_values["log_utility"])[0] +
         expected_catch_2                   * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch"])[0] +
         expected_catch_sq_2                * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch_sq"])[0] + 
-        cell_area                          * Rcpp::as<Rcpp::NumericVector>(coef_values["cell_area"])[0];
+        arma::log(cell_area)                          * Rcpp::as<Rcpp::NumericVector>(coef_values["log_cell_area"])[0];
       
       // arma::vec cell_utility_here_now = arma::exp(cell_coefficent_here_now);
       
