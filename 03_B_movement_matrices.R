@@ -22,10 +22,12 @@ rm(list = ls())
 par(mfrow = c(1, 1))
 
 colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
+common_crs = 7850 
 
 ## Files used in this script --------------------------------------------------
 
 file_water <- "data/output_data/02_watergrid.rds"
+file_land <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 file_bathy <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
 file_hab_model <- "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds"
 
@@ -51,6 +53,8 @@ st_centroid_within_poly <- function (poly) { # This returns the centre of the pl
 
 water <- readRDS(file_water) %>% 
   st_make_valid()
+
+land <- st_read(file_land)
 
 bathy <- raster::raster(file_bathy)#; plot(bathy)
 
@@ -84,18 +88,20 @@ NCELL <- nrow(points)
 
 # Convert the points in the centroids of the polygon to a spatial points file
 points$ID <- as.integer(points$ID)
-points_sf <- st_as_sf(points, coords = c("X", "Y"))
+points_sf <- st_as_sf(points, coords = c("X", "Y"), crs = st_crs(water)) %>%
+  st_transform(common_crs)
 points_sp <- st_cast(st_geometry(points_sf), "POINT")
 
 # Calculate the distance from each point to other points
-dist.mat <- st_distance(points_sp)
+dist_matrix_full <- st_distance(points_sp)
+plot(points_sp)
 
 # Get the IDS for neighbour cells
 n.closest <- 8 # Number of neighbours, 6 if cell shape is hexagon, 8 if square
-neighbours <- as.data.frame(array(0, dim=c(NCELL, n.closest)))
+neighbours <- as.data.frame(array(0, dim = c(NCELL, n.closest)))
 
 for (i in 1:n.closest){
-  neighbours[,i] <- apply(dist.mat, 1, function(x) {
+  neighbours[,i] <- apply(dist_matrix_full, 1, function(x) {
     order(x, decreasing=F)[i+1] })
 } # So you end up with a distance matrix of each grid cell centroid's distance to its 8 nearest neighbours
 
@@ -109,7 +115,8 @@ for (i in 1:n.closest){
   temp2 <- temp1 %>%
     rename(ID = "neighbours[, i]") %>% 
     inner_join(., points, by="ID") %>% 
-    st_as_sf(., coords = c("X", "Y")) 
+    st_as_sf(., coords = c("X", "Y"), crs = st_crs(water)) %>%
+    st_transform(common_crs)
   
   temp3 <- st_cast(st_geometry(temp2), "POINT")
   
@@ -138,9 +145,16 @@ for(i in 1:n.closest){
   
 } # this loop connects each cell to its neighbour cells
 
-connected <- st_combine(c(multilinestrings[[1]], multilinestrings[[2]], multilinestrings[[3]], multilinestrings[[4]], multilinestrings[[5]], multilinestrings[[6]]))
+connected <- st_combine(c(multilinestrings[[1]], multilinestrings[[2]], multilinestrings[[3]], 
+                          multilinestrings[[4]], multilinestrings[[5]], multilinestrings[[6]], 
+                          multilinestrings[[7]], multilinestrings[[8]])) # should have as many objects to st_combine as n.closest
 connected <- st_cast(connected, "LINESTRING") # Needs to be a line string rather than multiline for the next step
 plot(connected)
+
+connected <- st_set_crs(connected, common_crs)
+
+edges_sf <- st_as_sf(st_cast(connected, "LINESTRING")) %>%
+  mutate(id = row_number())
 
 st_write(connected, "data/output_data/03_B_network_shapefile.shp", delete_layer = T)
 
@@ -154,22 +168,23 @@ network <- as_sfnetwork(connected, directed = FALSE) %>%
 # Calculate the distances from each point to every other point on the network
 net <- activate(network, "nodes")
 network_matrix <- st_network_cost(net, from=points_sf, to=points_sf)
-network_matrix <- network_matrix * 111 # Multiple by 111 to get from degrees to kms
+network_matrix <- network_matrix / 1000  # convert to km if needed
+
 dim(network_matrix); nrow(points_sf) # Check that the dimensions match up to how many points you think you should have in the network
 
 # Checking that short distances between points are the same e.g. 1 -> 2
 test_point_1 <- 1
 test_point_2 <- 2
 plot(points_sf, col = ifelse(points_sf$ID == test_point_1 | points_sf$ID == test_point_2, "red", "gray"), 
-     main = paste0("Distance between red points is ", round((st_distance(points_sf[test_point_1,2], points_sf[test_point_2,2])) * 111), "km, which is realistic."))
+     main = paste0("Distance between red points is ", round((st_distance(points_sf[test_point_1,2], points_sf[test_point_2,2]))/1000), "km, which is realistic."))
 
 # Distance should not be measured in a straight line, it should go around land (if there is land between two points).
-test_point_1 <- 10
+test_point_1 <- 500
 test_point_2 <- max(points_sf$ID)
 plot(points_sf, col = ifelse(points_sf$ID == test_point_2 | points_sf$ID == test_point_1, "red", "gray"), 
-     main = paste0("Distance between red points is ", round((st_distance(points_sf[test_point_2,2], points_sf[test_point_1,2])) * 111), "km, which is *not* realistic."))
-mtext(paste0("Distance around land is ", round((st_network_cost(net, from=points_sf[test_point_2,2], to=points_sf[test_point_1,2])) * 111), " km",
-             ", Distance in a straight line is ", round((st_distance(points_sf[test_point_2,2], points_sf[test_point_1,2])) * 111), " km"), 
+     main = paste0("Distance between red points is ", round((st_distance(points_sf[test_point_2,2], points_sf[test_point_1,2])) / 1000), "km, which is *not* realistic."))
+mtext(paste0("Distance around land is ", round((st_network_cost(net, from=points_sf[test_point_2,2], to=points_sf[test_point_1,2])) / 1000), " km",
+             ", Distance in a straight line is ", round((st_distance(points_sf[test_point_2,2], points_sf[test_point_1,2])) / 1000), " km"), 
       side = 3, line = -1.5, at = par("usr")[1] + 0.4*diff(par("usr")[1:2]),
       cex = 1.2, col = colour_palette[5])
 
@@ -206,6 +221,7 @@ for(r in 1:NCELL){
     pDist[r,c] <- p
   } 
 } # this loop compares the distance of cell 1 with every other cell, cell 2 with every other cell, cell 3....
+
 
 # Calculate the difference in habitat types between each of the cells i.e. will there be an increase in reef % if you go from cell 1 to cell 2
 habitat_types <- c("reef", "seagrass", "sand")
@@ -282,6 +298,7 @@ a = -(1 / swim_speed_adult)
 class(pDist)
 adult_hab_attractivity <- hab_aff + (a * pDist)# not exponentiating the hab_aff prediction because it inflates values unnecessarily.
 glimpse(adult_hab_attractivity)
+dim(adult_hab_attractivity)
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
@@ -309,7 +326,6 @@ adult_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
 adult_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
 rowSums(adult_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
 sum(is.na(adult_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
-adult_cell_movement_probability[1:10, 1:10]
 
 
 # We'll look at whether the movement makes sense.
@@ -451,7 +467,7 @@ swim_speed_juv <- 5
 a = -(1/swim_speed_juv)
 
 
-juv_hab_attractivity <- (a * pDist) + hab_aff # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
+juv_hab_attractivity <- (a * pDist) + hab_aff^2 # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
 glimpse(juv_hab_attractivity)
 
 # Calculate the summed utility across the rows 
@@ -533,5 +549,4 @@ saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_B_adult_mov
 saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
 saveRDS(recruitment, "data/output_data/03_B_recruitment.rds")
 
-test <- readRDS( paste0("data/output_data/03_B_adult_movement_10_swim_speed.rds"))
 ### END ###
