@@ -238,7 +238,7 @@ equil_recr <- (fished_f_sb-alpha)/(beta*fished_f_sb) # this says 'however, under
 ## so far the fished and unfished populations and spawning biomasses were hypothetical, for a single recruit.
 ## here we scale the spawning biomasses to the level of recruitment, to make a starting population.
 
-init_recr <- 4000 # in thousands - normally 5000 for big model, 5 for small model
+init_recr <- 10000 # in thousands - 4000 is too small
 
 # calculate initial fished recruitment (how many new fish from the fished population)
 init_fished_recr <- (fished_f_sb-alpha) / (fished_f_sb*beta) * init_recr 
