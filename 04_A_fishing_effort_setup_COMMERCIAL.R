@@ -246,13 +246,6 @@ ggplot() +
 # ayoooo im a geniuuus
 
 
-# 2. SAVE UTILITY -------------------------------------------------------------
-
-utility[200,,1] # random cell for year 1
-# not sure i need this separate from the list
-# saveRDS(utility, "data/output_data/04_A_commercial_utility.rds")
-
-
 # 3. fishability --------------------------------------------------------------
 
 # fishability refers to whether this cell in this month and this year is open to fishing.
@@ -471,12 +464,6 @@ ggplot(data = water %>% mutate(test = test)) +
   labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
 
-
-# 3. SAVE CATCHABILITY --------------------------------------------------------
-
-# not sure i actually need to save this separately from the list
-# glimpse(catchability)
-# saveRDS(catchability, "data/output_data/04_A_commercial_catchability.rds")
 
 # 4. set up fishing days values -----------------------------------------------
 
@@ -841,12 +828,6 @@ dimnames(access_point_effort)[[2]] <- c(1:length(dimnames(access_point_effort)[[
 
 # utility # watch out that the order of ramp effort and of utility match: otherwise you're assigning the effort to the wrong ramp in the function
 
-# 4. SAVE EFFORT VALUES -------------------------------------------------------
-
-# format cell x access_p x year - not sure i actually need to save it separately
-# glimpse(access_point_effort)
-# saveRDS(access_point_effort, "data/output_data/04_A_commercial_fishing_days.rds")
-
 
 # 5. create a list to use in the C++ function ---------------------------------
 
@@ -862,5 +843,52 @@ coef_values <- tibble(log_utility = 1,
 fishing_info_list <- list(catchability, utility, access_point_effort, cell_area_m2, coef_values)
 names(fishing_info_list) <- c("catchability", "utility", "fishing_days", "cell_area_m2", "coef_values")
 saveRDS(fishing_info_list, "data/output_data/04_A_commercial_fishing_info.rds")
+
+
+## 6. SETTING UP EFFORT FOR BURN IN -------------------------------------------
+
+# the burn-in exists only to stabilise the population before the simulations start.
+# to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
+
+# obtain the relative contribution of each boat ramp
+effort_prop <- rbind(ramp_effort_n, ramp_effort_w) %>%
+  dplyr::filter(year == 1900, 
+                month == 1) %>% 
+  dplyr::mutate(com_prop = adjusted_effort/sum(adjusted_effort)) %>% 
+  dplyr::select(boat_ramp, com_prop, adjusted_effort) %>% 
+  glimpse()
+barplot(effort_prop$com_prop)
+
+
+# calculate the low level of fishing
+eq.init.fish = 0.025 # this is the new level of fishing mortality, very low.
+q = 0.00001 # catchability, or the risk of a fish being caught
+effort = (-log(1-eq.init.fish))/q # this is the number of this fleet's fishing days in a year.
+
+
+# we then split this effort in every month
+seasonal_multipliers
+burn_in_effort <- seasonal_multipliers*effort
+
+burn_in_effort <- as.data.frame(burn_in_effort) %>%
+  mutate(!!!setNames(rep(list(0), length(BR$name)), BR$name)) %>% 
+  rename(effort = "burn_in_effort")
+
+
+## Split up by boat ramp
+for(AP in 1:(ncol(burn_in_effort)-1)){
+  burn_in_effort[AP+1]= burn_in_effort$effort*effort_prop[AP, "com_prop"]
+}
+
+burn_in <- array(0, dim = c(12, length(BR$name), n_years_tot))
+
+for (i in 1:n_years_tot) {
+  burn_in[, , i] <- as.matrix(burn_in_effort[, -1])
+} # all years have the same small amount of fishing, so just copy-paste it in all years. this format is needed by the C++ function.
+
+saveRDS(burn_in, file = "data/output_data/04_A_commercial_burn_in_effort.rds")
+# for the burn in, just replace the corresponding list object from section 5 with this one.
+
+## NEED TO DO THE SAME BURN IN FOR REC FISHING
 
 ### END ###
