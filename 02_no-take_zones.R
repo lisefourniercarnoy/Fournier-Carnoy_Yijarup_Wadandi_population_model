@@ -31,11 +31,15 @@ bbox <- st_bbox(c(xmin = 114.4, xmax = 116.0, ymin = -35.3, ymax = -32.5), crs =
 
 file_NTZ    <- "data/output_data/Q_NTZ_manual_clean_01_B.shp"
 file_water  <- "data/output_data/01_B_water.rds"
+file_land   <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 
 fleets <- c("commercial", "boat_rec", "shore_rec") # these are the fleets from 01_B "MP_permissions" that describe fishing per marine park zone
 
 
 ## Load files -----------------------------------------------------------------
+
+land <- st_read(file_land) %>%
+  st_transform(common_crs)
 
 NTZ <-  st_read(file_NTZ) %>%
   st_transform(common_crs) %>%
@@ -76,8 +80,16 @@ com_metro_closure <- water %>%
     shore_rec = TRUE,
     SC_restriction_date = "15/11/2007" # see source : https://www.abc.net.au/news/2007-11-15/commercial-fisherman-angry-about-new-bans/726090 
   )
-NTZ <- rbind(NTZ, com_metro_closure)
-plot(NTZ$geometry)
+
+plot(com_metro_closure$geometry)
+plot(NTZ$geometry, add = T, col = "red")
+
+com_closure_only <- st_difference(com_metro_closure, st_union(NTZ))
+plot(com_closure_only$geometry, col = "gray")
+plot(NTZ$geometry, add = T, col = "red")
+
+NTZ <- rbind(com_closure_only, NTZ)
+plot(NTZ$geometry, col = "red")
 
 
 ## Make a temporal closure area -----------------------------------------------
@@ -147,20 +159,42 @@ cols <- c("ID", "name", "zone_type", "zone", "epbc", "type",
           "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished", "SC_restriction_date", 
           "geometry")
 
-# Make a grid for areas that are not fished
+# obtained grid cells that are fished
+fished <- st_difference(water, st_union(NTZ)) %>% # takes a while
+  mutate(
+    SC_status = FALSE,
+    TC_status = FALSE,
+    TC_restriction_date = list(NA),
+    TC_restriction_months = list(NA),
+    TC_restriction_perc_fished = list(NA),
+    SC_restriction_date = list(NA)
+  )
+fished$area <- st_area(fished) 
+fished <- fished[as.numeric(fished$area) > 1,] # the st_difference leaves very small features around the coast - filter them out by keeping cells > 1m2
+mapview::mapview(fished[!is.list(fished)]) # check things make sense
+
+
+# obtain grid cells that are temporal closure (HERE THE CLOSURE OVERLAPS COMPLETELY WITH THE NTZ. OTHERWISE ST_DIFFERENCE IS NEEDED)
+TC_area <- st_intersection(water, TC, sparse = F) %>% 
+  mutate(zone_type = NA, 
+         zone = NA) %>% 
+  st_make_valid() %>%
+  st_transform(common_crs)
+TC_SC_overlap <- st_intersection(TC_area, NTZ) %>% 
+  mutate(
+    TC_status = TRUE,
+    SC_status = TRUE
+    )
+mapview::mapview(TC_SC_overlap[!is.list(TC_SC_overlap)])
+
+
+# Make a grid for areas that are spatial closure only
 NTZarea <- st_intersection(NTZ, water) %>% 
   st_make_valid() %>%
   st_transform(common_crs)
 plot(NTZarea$geometry)
 
-TCarea <- st_intersection(water, TC, sparse = F) %>% 
-  mutate(zone_type = NA, 
-         zone = NA) %>% 
-  st_make_valid() %>%
-  st_transform(common_crs)
-plot(TCarea$geometry)
-
-SC_only <- st_difference(NTZarea, st_union(TCarea)) %>%
+SC_only <- st_difference(NTZarea, st_union(TC_SC_overlap)) %>%
   mutate(
     SC_status = TRUE,
     TC_status = FALSE,
@@ -168,72 +202,34 @@ SC_only <- st_difference(NTZarea, st_union(TCarea)) %>%
     TC_restriction_months = list(NA),
     TC_restriction_perc_fished = list(NA)
   ) %>% 
-  dplyr::select(any_of(cols))
+  dplyr::select(any_of(cols)) %>% 
+  dplyr::filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON"))
+SC_only$area <- st_area(SC_only)
+SC_only <- SC_only[as.numeric(SC_only$area) > 1,] # the st_difference leaves very small features around the coast - filter them out by keeping cells > 1m2
+mapview::mapview(SC_only[!is.list(SC_only)])
 
-TC_only <- st_difference(TCarea, st_union(NTZarea)) %>% 
-  mutate(
-    TC_status = TRUE,
-    SC_status = FALSE,
-    SC_restriction_date = NA
-  ) %>% 
-  dplyr::select(any_of(cols))
+# check that everything lines up
+plot(SC_only$geometry, col = "red")
+plot(fished$geometry, col = "gray", add = T)
+plot(TC_SC_overlap$geometry, col = "blue", add = T)
 
-overlap <- st_intersection(NTZarea, TCarea) %>% 
-  mutate(
-    TC_status = TRUE,
-    SC_status = TRUE,
-  ) %>% 
-  dplyr::select(all_of(cols))
 
 names(SC_only)
-names(TC_only)
-names(overlap)
+names(TC_SC_overlap)
+names(fished)
 
 
 
-combined_closures <- bind_rows(
+water <- bind_rows(
   SC_only,
-  TC_only,
-  overlap
+  TC_SC_overlap,
+  fished
   ) %>% 
   dplyr::filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) %>% 
   dplyr::select(any_of(cols))
-plot(combined_closures$geometry, col = "red")
+plot(water$geometry, col = "red")
+mapview::mapview(water[!is.list(water)])
 
-
-# Make a grid for areas that are fished
-NTZ_union <- st_union(combined_closures) %>%
-  st_make_valid() %>%
-  st_transform(common_crs)
-plot(NTZ_union)
-
-fished_area <- st_difference(water, NTZ_union) %>% 
-  st_make_valid() %>%
-  st_transform(common_crs)
-plot(fished_area$geometry)
-
-# Put this back together with the fished area to create "water" again
-fished_area <- st_sf(fished_area) %>%
-  mutate(name = NA,
-         zone_type = NA,
-         zone = NA,
-         epbc = NA,
-         
-         TC_status = FALSE,
-         SC_status = FALSE,
-         SC_restriction_date = NA,
-         TC_restriction_date = NA,
-         TC_restriction_months = NA,
-         TC_restriction_perc_fished = NA) %>% 
-  dplyr::select(any_of(cols))
-plot(fished_area$geometry)
-fished_area[,fleets] <- NA
-names(fished_area)
-names(combined_closures)
-
-water <- rbind(combined_closures, fished_area) %>% 
-  mutate(ID = 1:nrow(.))
-plot(water$geometry)
 
 # Check that the NTZs are where you expect them to be
 ggplot(water) +
@@ -245,6 +241,7 @@ ggplot(water) +
   theme_void() +
   scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
 
+mapview::mapview(water[!is.list(water)])
 
 ## Identify spawning ground ---------------------------------------------------
 
@@ -292,6 +289,7 @@ ggplot() + # plot check AFTER adding spawning type
   geom_sf(data = water, aes(fill = spawning_status), col = NA) +
   scale_fill_manual(values = colour_palette) +
   theme_minimal()
+mapview::mapview(water[!is.list(water)])
 
 # Calculating grid cell area and removing cells < 1m2
 water <- water %>%
@@ -304,6 +302,7 @@ water <- st_make_valid(water) %>%
 # give a new cell ID to all cells, because a few were cut in two in the process
 water$ID <- 1:nrow(water)
 
+mapview::mapview(water[!is.list(water)])
 
 ## Save files for next step ---------------------------------------------------
 
