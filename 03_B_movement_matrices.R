@@ -212,17 +212,17 @@ saveRDS(water, file="data/output_data/03_B_water.rds")
 # Calculate the probability a fish moves to this site in a given time step using a swimming speed.
 # This creates a dispersal kernel based on the negative exponential distribution.
 
-network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
-
-pDist <- matrix(NA, ncol=NCELL, nrow=NCELL)
-for(r in 1:NCELL){
-  for(c in 1:NCELL){
-    p <- network_matrix[r,c]*1
-    pDist[r,c] <- p
-  } 
-} # this loop compares the distance of cell 1 with every other cell, cell 2 with every other cell, cell 3....
-
-
+# network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
+# 
+# pDist <- matrix(NA, ncol=NCELL, nrow=NCELL)
+# for(r in 1:NCELL){
+#   for(c in 1:NCELL){
+#     p <- network_matrix[r,c]*1
+#     pDist[r,c] <- p
+#   } 
+# } # this loop compares the distance of cell 1 with every other cell, cell 2 with every other cell, cell 3....
+# 
+# 
 # Calculate the difference in habitat types between each of the cells i.e. will there be an increase in reef % if you go from cell 1 to cell 2
 habitat_types <- c("reef", "seagrass", "sand")
 habitat_perc <- list(
@@ -237,17 +237,17 @@ p_habitat <- list() # Initialize a list to store the matrices
 
 # loop over each habitat type in habitat_perc
 for (habitat in names(habitat_perc)) {
-  
+
   print(habitat) # see where you are
   p_matrix <- matrix(NA, ncol = NCELL, nrow = NCELL) # Create an empty matrix
-  
+
   # compute the difference matrix
-  for (r in 1:NCELL) { 
+  for (r in 1:NCELL) {
     for (c in 1:NCELL) {
       p_matrix[r, c] <- as.numeric(habitat_perc[[habitat]][c] - habitat_perc[[habitat]][r])
-    } 
-  } 
-  
+    }
+  }
+
   # store the matrix in the list
   p_habitat[[habitat]] <- p_matrix
 } # the loop compare the habitat cover of cell 1 to every other cell, then cell 2 to every other cell, then cell 3, etc. for every habitat type
@@ -255,8 +255,10 @@ glimpse(p_habitat)
 
 ## Save all the files you need to remake these matrices -----------------------
 
-saveRDS(pDist, "data/output_data/03_B_pDist.rds")
-saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
+# saveRDS(pDist, "data/output_data/03_B_pDist.rds")
+# saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
+
+pDist <- readRDS("data/output_data/03_B_pDist.rds")
 
 
 ## Create adult movement probability using utility function -------------------
@@ -296,15 +298,21 @@ a = -(1 / swim_speed_adult)
 # from this we can determine the utility of each of the cells.
 # This is very sensitive to changes in the habitat values.
 class(pDist)
-adult_hab_attractivity <- hab_aff + (a * pDist)# not exponentiating the hab_aff prediction because it inflates values unnecessarily.
+adult_hab_attractivity <- hab_aff^2 + (a * pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
 glimpse(adult_hab_attractivity)
 dim(adult_hab_attractivity)
+max(adult_hab_attractivity)
+
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-cell_utility <- exp(adult_hab_attractivity) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+cell_area_km2 <- as.numeric(water$cell_area) * 1e-6  # convert m² to km²
+cell_utility <- exp(adult_hab_attractivity) * matrix(cell_area_km2, 
+                                                     nrow = NCELL, 
+                                                     ncol = NCELL, 
+                                                     byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 
 rowU <- as.data.frame(rowSums(cell_utility))
@@ -317,8 +325,15 @@ summary(water_2$test)
 ggplot() +
   geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
   scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
-  theme_void() 
+  theme_void()
 
+water_2 <- water
+water_2$test <- cell_utility[100,]
+summary(water_2$test)
+ggplot() +
+  geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
+  scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
+  theme_void()
 
 
 # Calculate the probability that the fish will move to this site
@@ -387,12 +402,6 @@ dispersal$area_km2 <- as.vector(water$cell_area*0.000001) # convert cell_area to
 glimpse(dispersal)
 sum(is.na(dispersal$perc_habitat)) # no NAs, all good.
 
-dispersal <- dispersal %>% 
-  #filter(perc_habitat != 0) %>% 
-  mutate(area_km2 = area_km2 * 0.1, # why??
-         perc_habitat = perc_habitat * 0.5) %>% 
-  glimpse()
-
 # check that spawning ground is correct
 ggplot() +
   geom_sf(data = water, aes(fill = dispersal$spawning), col = NA)
@@ -405,7 +414,7 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(dispersal)))
 cell_utility[,2] <- as.numeric(dispersal$ID) 
 
 for(cell in 1:nrow(recruitment)){
-  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25*exp(dispersal[cell, "spawning"]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell.
+  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25 * exp(dispersal[cell, "spawning"]) * dispersal[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
@@ -474,7 +483,10 @@ glimpse(juv_hab_attractivity)
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-cell_utility <- exp(juv_hab_attractivity) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+cell_utility <- exp(adult_hab_attractivity) * matrix(cell_area_km2, 
+                                                     nrow = NCELL, 
+                                                     ncol = NCELL, 
+                                                     byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 rowU <- as.data.frame(rowSums(cell_utility))
 
