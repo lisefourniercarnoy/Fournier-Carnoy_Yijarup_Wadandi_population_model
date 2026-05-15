@@ -24,9 +24,199 @@ library(abind) # for dealing with arrays i think.
 
 ## Read in the functions ------------------------------------------------------
 
-sourceCpp("functions/C_model_RcppArm_test.cpp") # currently using a test version of the model - which has 3 sources of effort. 
-source("functions/X_Functions.R")
+sourceCpp("functions/separated_functions/run_full_model_function.cpp", verbose = TRUE)
 
+## Read files -----------------------------------------------------------------
+
+water             <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
+
+## Get model parameters -------------------------------------------------------
+
+n_yrs_modelled <- 20 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
+
+max_cell    <- nrow(water) # Number of cells in the model
+max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
+max_year    <- n_yrs_modelled # Number of years the model should run for 
+
+starting_pop  <- readRDS("data/output_data/05_starting_population.rds") %>% glimpse()
+weight        <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
+selectivity   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME FOR ALL FLEETS BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
+nat_mort      = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
+
+spawn_months <- c(10, 11, 12) # 1-indexed. the function deals with zero-indexing it.
+BHa           = as.double(readRDS("data/output_data/05_Beverton-Holt_alpha.rds")) # see script 05
+BHb           = as.double(readRDS("data/output_data/05_Beverton-Holt_beta.rds")) # see script 05
+PF            = 0.5 # proportion expected to be females
+hyperallo     = (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+mature          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
+settlement      <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse() #; settlement <- settlement[, 1] # selecting a single column because the function expects a vector
+
+adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+
+fleet_names <- c(
+  #"commercial"#, 
+  "boat_rec"#, 
+  #"shore_rec"
+                 )
+com_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds") %>% glimpse()
+com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+brec_info <- readRDS("data/output_data/04_C_boat_rec_fishing_info.rds") %>% glimpse()
+brec_info$fishing_days[brec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+srec_info <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds") %>% glimpse()
+srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+
+# for the burn-in, we'll use a constant low level of fishing, so replace all years with 1900 fishing effort
+com_info$fishing_days[,,1:dim(com_info$fishing_days)[[3]]] <- com_info$fishing_days[,,1]
+brec_info$fishing_days[,,1:dim(brec_info$fishing_days)[[3]]] <- brec_info$fishing_days[,,1]
+srec_info$fishing_days[,,1:dim(srec_info$fishing_days)[[3]]] <- srec_info$fishing_days[,,1]
+
+# add scaling for each fleet, to account for different gears being less efficient, compared to commercial. see g-sheets Fishing effort reconstruction
+brec_info$fishing_days <- brec_info$fishing_days * 0.081
+srec_info$fishing_days <- srec_info$fishing_days * 0.017
+
+fleet_info = list(#com_info#, 
+                  brec_info
+                  #srec_info
+                  )
+
+
+## Set up the initial population ----------------------------------------------
+
+total <- array(0, dim = c(max_year, 1))
+
+yearly_pop <- array(0, dim = c(max_cell, 12, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
+
+BURN_IN_pop <- list() # keep record of the burn-in outputs
+BURN_IN_catch_weight <- list()
+BURN_IN_catch_number <- list()
+
+yearly_pop <- array(0, dim = c(max_cell, 12, max_age))
+
+for(AGE in 1:max_age){
+  total_this_age <- starting_pop[AGE, "N"]  # or starting_pop[AGE, 1]
+  # distribute proportionally to settlement — same habitat weighting as recruits
+  yearly_pop[, 1, AGE] <- (settlement / sum(settlement)) * total_this_age
+}
+
+cat("Total fish initialised:", sum(yearly_pop), "\n")
+cat("Age structure check:\n")
+print(round(colSums(yearly_pop[,1,])))
+
+Start = Sys.time()
+for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
+  
+  # loop over all the Rcpp functions in the model
+  ModelOutput <- run_full_model_function(YEAR = YEAR,
+                                         max_cell = max_cell,
+                                         max_age = max_age,
+                                         max_year = max_year,
+                                         yearly_pop = yearly_pop,
+                                         weight = weight,
+                                         selectivity = selectivity,
+                                         natural_mortality = nat_mort,
+                                         spawning_months = spawn_months,
+                                         BHa = BHa,
+                                         BHb = BHb,
+                                         PF = PF,
+                                         ha_scaling = hyperallo,
+                                         maturity = mature,
+                                         settlement = settlement,
+                                         adult_movement_prob = adult_movement,
+                                         fleet_names = fleet_names,
+                                         fleet_info = fleet_info
+  )
+
+  # we want to save a couple things: 
+  ## 1. the population at the end of the year (to give to the loop again as January population)
+  yearly_pop <- ModelOutput$yearly_pop #  cell x month x age
+  fishing_mortality <- ModelOutput$fishing_mortalities
+  ## 2. catch etc. which we will do later.
+  BURN_IN_pop[[YEAR+1]] <- ModelOutput$yearly_pop
+  #BURN_IN_catch_number[[YEAR+1]] <- rowSums(ModelOutput$catch_number_by_fleet, dims = 3)
+  #BURN_IN_catch_weight[[YEAR+1]] <- rowSums(ModelOutput$catch_weight_by_fleet, dims = 3)
+  
+}
+End = Sys.time()
+Runtime = End - Start
+Runtime
+
+# finite f check (fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa)
+
+f <- 1 - exp(-(fishing_mortality)) # the % of fish removed from the population over a period of time x
+
+age_to_plot <- 10
+age_f <- as.vector(f[, age_to_plot])
+water2 <- readRDS("data/output_data/02_watergrid.rds")
+water2$f <- age_f
+
+ggplot(water2) +
+  geom_sf(aes(fill = f)) +
+  scale_fill_viridis_c() +
+  labs(
+    title = paste0("Fishing mortality - Age ", age_to_plot),
+    fill = "Population"
+  ) +
+  theme_minimal()
+mapview::mapview(water2[,c("geometry", "f")], zcol = "f")
+
+
+## check whether the burn-in population is stable
+total_pop <- lapply(BURN_IN_pop, function(x) rowSums(x, dims = 2))
+tot_pop2 <- sapply(total_pop, function(x) sum(x[, 12]))
+plot(tot_pop2)
+
+#age structure of the burn-in population in the last time step
+plot(colSums(yearly_pop[,12,]))
+
+# check where fish are more densely populated.
+year_to_plot <- 10
+month_index <- 12
+monthly_fish_df <- as.data.frame(yearly_pop[,,year_to_plot])
+colnames(monthly_fish_df) <- paste0("month_", 1:12)
+water <- readRDS("data/output_data/02_watergrid.rds")
+water2 <- cbind(water, monthly_fish_df)
+month_col <- paste0("month_", month_index)
+ggplot(water2) +
+  geom_sf(aes(fill = .data[[month_col]])) +
+  scale_fill_viridis_c() +
+  labs(
+    title = paste0("Fish population - Age ", year_to_plot),
+    fill = "Population"
+  ) +
+  theme_minimal()
+
+
+
+
+ModelOutput$catch_weight_by_fleet[1,]
+
+# check how powerful fleets are relative to each other ----
+avg_weight <- sum(ModelOutput$catch_weight_by_fleet[1,][[1]]) / 
+  sum(ModelOutput$catch_number_by_fleet[1,][[1]])
+
+n_fleets <- length(fleet_names)
+fleet_totals <- sapply(1:n_fleets, function(f) {
+  arr <- ModelOutput$catch_weight_by_fleet[[f, 1]]
+  sum(arr)  # sum everything: cells, months, ages/years
+})
+
+plot_df <- data.frame(
+  fleet = fleet_names[1:n_fleets],
+  catch_kg = fleet_totals
+)
+
+ggplot(plot_df, aes(x = fleet, y = catch_kg, fill = fleet)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+
+
+
+## BELOW IS ARCHIVE -----------------------------------------------------------
 
 ## Colours --------------------------------------------------------------------
 
@@ -36,15 +226,19 @@ my.colours <- "PuBu"
 
 ## Load files -----------------------------------------------------------------
 
-adult_movement <- readRDS("data/output_data/03_adult_movement_10_swim_speed.rds") %>% glimpse()
-effort_com <- readRDS("data/output_data/04A_commercial_burn_in_fishing.rds") %>% glimpse()
-effort_s_rec <- readRDS("data/output_data/04B_shore_rec_burn_in_fishing.rds") %>% glimpse()
-effort_b_rec <- readRDS("data/output_data/04C_boat_rec_burn_in_fishing.rds") %>% glimpse()
+adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+effort_com <- readRDS("data/output_data/04_A_commercial_burn_in_fishing.rds") %>% glimpse() ## MUST NOT HAVE ZEROES OR NAs
+effort_s_rec <- readRDS("data/output_data/04_B_shore_rec_burn_in_fishing.rds") %>% glimpse() ## MUST NOT HAVE ZEROES OR NAs
+effort_b_rec <- readRDS("data/output_data/04_C_boat_rec_burn_in_fishing.rds") %>% glimpse() ## MUST NOT HAVE ZEROES OR NAs
 
 # replacing effort zero to a small positive value, otherwise the function can't compute things well.
 effort_com[effort_com == 0] <- 1e-10 
 effort_b_rec[effort_b_rec == 0] <- 1e-10
 effort_s_rec[effort_s_rec == 0] <- 1e-10
+
+effort_com[is.na(effort_com)] <- 1e-10 
+effort_b_rec[is.na(effort_b_rec)] <- 1e-10
+effort_s_rec[is.na(effort_s_rec)] <- 1e-10
 
 # no_take <- readRDS("data/output_data/02_no_take_list.rds") %>% glimpse()
 water             <- readRDS("data/output_data/02_watergrid.rds"); plot(water)
@@ -55,9 +249,9 @@ selectivity_s_rec <- readRDS("data/output_data/05_selectivity_retention.rds") %>
 
 mature          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
 weight          <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
-settlement      <- readRDS("data/output_data/03_recruitment.rds") %>% glimpse()
+settlement      <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse()
 
-n_yrs_modelled <- 50 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
+n_yrs_modelled <- 10 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
 
 # selectivity changes with length limits- charlotte had a couple of length limit changes, so she chose the most recent length limit to run the model
 # she then makes enough matrix layers for the model to run (in my case, for 45 years- so dim() should be 30 age classes x 12 months x at least 45 years)
@@ -77,24 +271,25 @@ for(i in 1:6){
 }
 dim(selectivity_s_rec)[3] > n_yrs_modelled
 
+
 ## Model settings -------------------------------------------------------------
 
 # Natural Mortality
-nat_mort = 0.146 # NOT CHANGED FROM CHARLOTTE, NEED TO FIND SOMEWHERE
+nat_mort = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
 
 # Beverton-Holt Recruitment Values - Have sourced the script but need to check that alpha and beta are there
-BHa = 0.4344209 # NOT CHANGED FROM CHARLOTTE, NEED TO FIND SOMEWHERE
-BHb = 0.0002349538 # NOT CHANGED FROM CHARLOTTE, NEED TO FIND SOMEWHERE
+BHa = 1.201632 # see the second alpha in script 5
+BHb = 0.0001889668 # see the second beta in script 6
 PF = 0.5 # proportion expected to be females
-hyperallo <- 1.24 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
 
 # Model settings
 max_cell    <- nrow(water) # Number of cells in the model
-max_age     <- 30 # The max age of the fish in the model (-1 to account for the fact that Rcpp functions start from 0)
+max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
 max_year    <- n_yrs_modelled # Number of years the model should run for 
 plot_total  <- T # T if you want a line plot of the total or F for the map,
 
 pop_groups  <- seq(1, 12)
+
 
 ## Set up the initial population ----------------------------------------------
 
@@ -118,6 +313,13 @@ for(d in 1:dim(yearly_total)[3]){ # for every age of the fish...
 pop_total <- array(0, dim = c(max_cell, 12, max_year)) # This is our total population, all ages are summed and each column is a month (each layer is a year)
 dim(selectivity_b_rec)[3] > max_year # check there are enough layers to run. otherwise change in section 'load files'
 
+## TEST
+
+# test dynamic spawning months - master function is modified for this
+spawn_months <- c(9, 10, 11) # october-november
+spawn_months-1
+## END TEST
+
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
   
@@ -136,6 +338,7 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
                                   AdultMove = adult_movement, 
                                   Mature = mature, 
                                   Weight = weight, 
+                                  spawn_months = spawn_months,
                                   Settlement = settlement, 
                                   ha_scaling = hyperallo,
                                   
@@ -165,14 +368,13 @@ End = Sys.time()
 Runtime = End - Start
 Runtime
 
-
 ## plot checks
 # the burn-in total population
 total <- as.data.frame(total)
 plot(x = seq(1, max_year+1, 1), y = total$V1)
 
 # number of fish spatially
-year_to_plot <- 30
+year_to_plot <- 10
 monthly_fish_df <- as.data.frame(pop_total[,,year_to_plot])
 colnames(monthly_fish_df) <- paste0("month_", 1:12)
 water <- readRDS("data/output_data/02_watergrid.rds"); plot(water)
@@ -251,3 +453,159 @@ gifski(
 ## CHARLOTTE DOES ANOTHER RUN WITH HIGH LEVELS OF FISHING MORTALITY, I WONT FOR NOW - this is to check how sensitive the population is to diff levels of fishing. she found it wasn't sensitive so didn't bother too much.
 
 ### END ###
+
+
+## ARCHIVE TRYING WITH NEW FUNCTION ? -------------------------------------------------
+
+## Load files -----------------------------------------------------------------
+
+adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+selectivity <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()
+com_fishing_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds")
+
+# replacing effort zero to a small positive value, otherwise the function can't compute things well.
+com_fishing_info$fishing_days[com_fishing_info$fishing_days == 0] <- 1e-10 
+
+com_fishing_info$fishing_days[is.na(com_fishing_info$fishing_days)] <- 1e-10 
+
+
+# no_take <- readRDS("data/output_data/02_no_take_list.rds") %>% glimpse()
+water             <- readRDS("data/output_data/02_watergrid.rds"); plot(water)
+starting_pop      <- readRDS("data/output_data/05_starting_population.rds") %>% glimpse()
+
+mature          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
+weight          <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
+settlement      <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse()
+
+n_yrs_modelled <- 10 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
+
+# selectivity changes with length limits- charlotte had a couple of length limit changes, so she chose the most recent length limit to run the model for the burn-in
+# she then makes enough matrix layers for the model to run (in my case, for n_yrs_modelled years- so dim() should be 30 age classes x 12 months x at least n_yrs_modelled years)
+selectivity <- selectivity[, , 44] # selecting the most recent selectivity-retention
+for(i in 1:6){
+  selectivity <- abind(selectivity, selectivity, along=3)
+}
+
+dim(selectivity)[3] > n_yrs_modelled
+
+
+## Model settings -------------------------------------------------------------
+
+# Natural Mortality
+nat_mort = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
+
+# Beverton-Holt Recruitment Values - Have sourced the script but need to check that alpha and beta are there
+BHa = 1.201632 # see the second alpha in script 5
+BHb = 0.0001889668 # see the second beta in script 6
+PF = 0.5 # proportion expected to be females
+
+# Model settings
+max_cell    <- nrow(water) # Number of cells in the model
+max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
+max_year    <- n_yrs_modelled # Number of years the model should run for 
+plot_total  <- T # T if you want a line plot of the total or F for the map,
+
+pop_groups  <- seq(1, 12)
+
+
+## Set up the initial population ----------------------------------------------
+
+total <- array(0, dim = c(max_year+1, 1))
+
+yearly_total <- array(0, dim = c(max_cell, 12, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
+
+start_pop_year <- starting_pop %>% 
+  slice(which(row_number() %% 12 == 1)) # This sets the population in January to be the same population as the December just before
+
+for(d in 1:dim(yearly_total)[3]){ # for every age of the fish...
+  for(N in 1:starting_pop[d, 1]){ # and every number of fish of that age...
+    cellID <- ceiling((runif(n=1, min = 0, max = 1))*max_cell) # select a random cell...
+    yearly_total[cellID, 1, d] <- yearly_total[cellID, 1, d] + 1 # put a fish in the cell
+  }
+} # this loop randomly puts fish from the starting population (fish of different ages) in the cells
+
+
+
+## Run the model for the burn-in ----------------------------------------------
+
+pop_total <- array(0, dim = c(max_cell, 12, max_year)) # This is our total population, all ages are summed and each column is a month (each layer is a year)
+dim(selectivity)[3] > max_year # check there are enough layers to run. otherwise change in section 'load files'
+
+## TEST
+
+# test dynamic spawning months - master function is modified for this
+spawn_months <- c(9, 10, 11) # october-november
+spawn_months-1
+## END TEST
+
+Start = Sys.time()
+for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
+  
+  print(YEAR)
+  
+  # loop over all the Rcpp functions in the model
+  ModelOutput <- RunModelfunc_cpp(YEAR = YEAR,                                   
+                                  MaxCell = max_cell,
+                                  MaxYear = max_year, 
+                                  
+                                  MaxAge = max_age, 
+                                  NatMort = nat_mort, 
+                                  BHa = BHa, 
+                                  BHb = BHb, 
+                                  PF = PF, 
+                                  AdultMove = adult_movement, 
+                                  Mature = mature, 
+                                  Weight = weight, 
+                                  spawn_months = spawn_months,
+                                  Settlement = settlement, 
+                                  ha_scaling = hyperallo,
+                                  
+                                  YearlyTotal = yearly_total, 
+                                  
+                                  Selectivity_com = selectivity_com,
+                                  
+                                  Effort_com = effort_com,
+                                  Effort_b_rec = effort_b_rec,
+                                  Effort_s_rec = effort_s_rec
+  )
+  
+  yearly_total <- ModelOutput$YearlyTotal # this is an array of how many fish of each age exist in the first year of the model.
+  
+  # Save some outputs from the model 
+  pop_total[ , , YEAR+1] <- rowSums(ModelOutput$YearlyTotal[, , 1:max_age], dim = 2)
+  
+  water$pop <- pop_total[ , 12, YEAR + 1] # just keep the population at the end of the year
+  
+  total[YEAR+1, 1] <- sum(water$pop) # store the total population at the end of the year
+  
+}
+
+End = Sys.time()
+Runtime = End - Start
+Runtime
+
+## plot checks
+# the burn-in total population
+total <- as.data.frame(total)
+plot(x = seq(1, max_year+1, 1), y = total$V1)
+
+# number of fish spatially
+year_to_plot <- 10
+monthly_fish_df <- as.data.frame(pop_total[,,year_to_plot])
+colnames(monthly_fish_df) <- paste0("month_", 1:12)
+water <- readRDS("data/output_data/02_watergrid.rds"); plot(water)
+water2 <- cbind(water, monthly_fish_df)
+month_index <- 1
+month_col <- paste0("month_", month_index)
+ggplot(water2) +
+  geom_sf(aes(fill = .data[[month_col]])) +
+  scale_fill_viridis_c() +
+  labs(
+    title = paste0("Fish population - Year ", year_to_plot, ", Month ", month_index),
+    fill = "Population"
+  ) +
+  theme_minimal()
+
+## Save burn in population for use in the actual model
+saveRDS(yearly_total, file = "data/output_data/06_burn_in_population.rds")
+
