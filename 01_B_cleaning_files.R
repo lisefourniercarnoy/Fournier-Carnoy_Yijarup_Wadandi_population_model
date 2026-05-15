@@ -134,7 +134,7 @@ hab_polygon <- st_as_sf(as.polygons(app(cropped_ras[[1]], fun = function(x) ifel
 # The habitat predictions above don't reach the shore.
 # Bathymetry files never reach the shore so no models can be fitted on this area.
 # I'll export the strip between shore and habitat predictions to manually fill in QGIS
-# I'm using the categorisation beach/beach+rocky/rocky, as in the management plan, page 46, available here: https://www.dbca.wa.gov.au/management/plans/ngari-capes-marine-park
+# I'm using the categorisation beach/rocky, as in the management plan, page 46, available here: https://www.dbca.wa.gov.au/management/plans/ngari-capes-marine-park
 
 # plot(wa_map$geometry)
 # plot(hab_polygon$geometry)
@@ -150,11 +150,12 @@ hab_polygon <- st_as_sf(as.polygons(app(cropped_ras[[1]], fun = function(x) ifel
 # st_write(shore_hab, "data/output_data/01_B_wadandi_shore_habitat_to_categorise.shp", delete_layer = T)
 
 shore_hab <- st_read(file_shore_hab)
-plot(shore_hab)
+mapview::mapview(shore_hab)
+
 wa_map_union <- st_union(wa_map)
 shore_hab <- st_difference(shore_hab, wa_map_union) %>% st_transform(st_crs(hab)) # crop out the areas that are too high res.
 plot(shore_hab)
-# merge Claude's predicted habitat to the shore habitat
+# merge predicted habitat to the shore habitat
 
 # sand
 sand_shore <- rasterize(shore_hab[shore_hab$habitat == "sand",], hab, field = global(hab[["sand"]], fun = "max", na.rm = TRUE)[1,1], touches = TRUE)
@@ -183,8 +184,9 @@ reef_combined_clean <- mask(reef_combined, sand_mask, maskvalues = TRUE, updatev
 # combine into one
 hab_raster <- c(sand_combined, reef_combined_clean, seagrass_combined)
 hab_raster <- crop(hab_raster, st_transform(bbox_whole, crs(hab_raster))); plot(hab_raster)
-
+mapview::mapview(hab_raster, maxpixels = 2677296)
 saveRDS(hab_raster, "data/output_data/01_B_full_habitat_raster.rds")
+
 
 ## Make grid cells ------------------------------------------------------------
 
