@@ -22,6 +22,7 @@ library(MASS)
 library(CheckEM) # obtain data from EM
 library(tidyverse) # data handling
 library(sf) # to handle spatial objects
+library(terra) # to handle spatial objects
 library(glmmTMB) # to fit GLMM
 
 ## Files needed ---------------------------------------------------------------
@@ -29,14 +30,14 @@ library(glmmTMB) # to fit GLMM
 file_gb_obs_habitat <- "data/input_data/habitat_affinity/D01_waatern_tidy_habitat.rds"
 file_sw_obs_habitat <- "data/input_data/habitat_affinity/D01_waatu_tidy_habitat.rds"
 
-file_gb_lengths <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Lengths.txt"
-file_sw_lengths <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Lengths.txt"
+file_gb_lengths <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Lengths.txt"
+file_sw_lengths <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Lengths.txt"
 
-file_gb_maxn <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Points.txt"
-file_sw_maxn <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Points.txt"
+file_gb_maxn <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Points.txt"
+file_sw_maxn <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Points.txt"
 
-file_gb_metadata <- "data/input_data/habitat_affinity/2024_waatern_commonwealth/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
-file_sw_metadata <- "data/input_data/habitat_affinity/2024_waatu_commonwealth/2024-10_SwC_stereo-BRUVs_Metadata.csv"
+file_gb_metadata <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
+file_sw_metadata <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Metadata.csv"
 
 file_pred_hab <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
 
@@ -45,7 +46,9 @@ file_pred_hab <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
 
 # load habitat, lengths, metadata, and maxn, then remove false zeroes from the dataset
 
-# Habitat (observed)
+### Habitat -------------------------------------------------------------------
+
+# observed
 hab_gb <- readRDS(file_gb_obs_habitat) %>% 
   mutate(sand = sand/total_pts, # standardise habitat
          reef = reef/total_pts,
@@ -60,12 +63,13 @@ hab_sw <- readRDS(file_sw_obs_habitat) %>%
   ) %>% 
   glimpse()
 
-hab <- rbind(hab_gb, hab_sw)
+hab <- rbind(hab_gb, hab_sw) %>% glimpse()
 
 
-# Habitat (predicted)
+# predicted
 pred_hab <- readRDS(file_pred_hab) %>% 
   glimpse()
+
 
 # combine predicted and observed habitats
 hab_sf <- st_as_sf(hab)
@@ -76,53 +80,14 @@ test2 <- cbind(hab, test) %>% dplyr::select(-ID)
 glimpse(test2)
 hab <- test2
 
-
-# Lengths
-length_split <- 375 
-length_gb <- read.table(
-  file_gb_lengths,
-  header = TRUE,
-  sep = "\t",
-  fill = TRUE,
-  stringsAsFactors = FALSE
-) %>% 
-  dplyr::filter(Species == "auratus") %>% 
-  group_by(OpCode) %>% 
-  summarise(
-    n_mature   = sum(Length > length_split, na.rm = TRUE),
-    n_immature = sum(Length <= length_split, na.rm = TRUE),
-    total   = n(),
-    .groups = "drop"
-  ) %>% 
-  rename(opcode = OpCode) %>% 
-  glimpse()
-
-length_sw <- read.table(
-  file_sw_lengths,
-  header = TRUE,
-  sep = "\t",
-  fill = TRUE,
-  stringsAsFactors = FALSE
-) %>% 
-  dplyr::filter(Species == "auratus") %>% 
-  group_by(OpCode) %>% 
-  summarise(
-    n_mature   = sum(Length > length_split, na.rm = TRUE),
-    n_immature = sum(Length <= length_split, na.rm = TRUE),
-    total   = n(),
-    .groups = "drop"
-  ) %>% 
-  rename(opcode = OpCode) %>% 
-  glimpse()
-
-length <- rbind(length_gb, length_sw)
+### Metadata ------------------------------------------------------------------
 
 # Add metadata back into it
 meta_gb <- read.csv(file_gb_metadata, sep = ",", header = T, fill = T) %>% 
   dplyr::select(
     opcode,
     depth = depth_m
-    ) %>% 
+  ) %>% 
   glimpse()
 
 meta_sw <- read.csv(file_sw_metadata, sep = ",", header = T, fill = T) %>% 
@@ -135,27 +100,8 @@ meta_sw <- read.csv(file_sw_metadata, sep = ",", header = T, fill = T) %>%
 metadata <- rbind(meta_gb, meta_sw)
 
 
-# put it all together
-glimpse(metadata)
-glimpse(length)
-dat <- left_join(metadata, hab, by = "opcode") %>% 
-  dplyr::filter(!is.na(reef)) %>% # remove rows with missing habitat
-  glimpse()
-dat <- left_join(dat, length, by = "opcode")
+### MaxN counts ---------------------------------------------------------------
 
-dat[is.na(dat)] <- 0 # fill NAs with true zeroes 
-
-glimpse(dat)
-length_zeroes <- unique(dat$opcode[dat$total == 0]) # opcodes where no fish were lengthed
-
-dat <- dat %>%
-  pivot_longer(c(n_mature, n_immature)) %>%
-  dplyr::rename(size_class = name, count = value) %>% 
-  dplyr::select(!c("total")) %>% 
-  glimpse()
-
-
-# okay now find true zeroes
 maxn_gb <- read.table(
   file_gb_maxn,
   header = TRUE,
@@ -174,36 +120,113 @@ maxn_sw <- read.table(
   header = TRUE,
   sep = "\t",
   fill = TRUE,
-  stringsAsFactors = FALSE
+  stringsAsFactors = FALSE,
+  quote = ""
 ) %>% 
   dplyr::filter(Species == "auratus") %>% 
   mutate(opcode = OpCode) %>% 
   group_by(opcode, Frame) %>% 
   summarise(maxn = sum(Number)) %>% 
+  #dplyr::filter(!opcode %in% c('SWC-BV-016', "SWC-BV-084", "SWC-BV-131", 'SWC-BV-153')) %>% # these drops somehow don't have any fish in 
   glimpse()
 
 maxn <- rbind(maxn_gb, maxn_sw) %>% 
   full_join(metadata, by = "opcode") %>% 
   mutate(maxn = replace_na(maxn, 0)) %>%  # fill true zeroes
+  dplyr::select(-Frame) %>% 
+  unique() %>% 
   group_by(opcode) %>% 
-  slice_max(maxn, n = 1, with_ties = TRUE) %>%  # more robust than filter(maxn == max(maxn))
+  slice_max(maxn, n = 1, with_ties = TRUE) %>%
   glimpse()
 
-# find false zeroes
-length_zeroes # opcodes where no fish were lengthed
+
+### Lengths -------------------------------------------------------------------
+
+length_split <- 375 
+length_gb <- read.table(
+  file_gb_lengths,
+  header = TRUE,
+  sep = "\t",
+  fill = TRUE,
+  stringsAsFactors = FALSE
+) %>% 
+  dplyr::filter(Species == "auratus",
+                Length >= 171, 
+                Length <= 1142) %>% # remove fish that are too big or too small to be correctly lengthed
+  group_by(OpCode) %>% 
+  summarise(
+    n_mature   = sum(Length >= length_split, na.rm = TRUE),
+    n_immature = sum(Length < length_split, na.rm = TRUE),
+    total   = n(),
+    .groups = "drop"
+  ) %>% 
+  rename(opcode = OpCode) %>% 
+  glimpse()
+
+length_sw <- read.table(
+  file_sw_lengths,
+  header = TRUE,
+  sep = "\t",
+  fill = TRUE,
+  stringsAsFactors = FALSE
+) %>% 
+  dplyr::filter(Species == "auratus",
+                Length >= 171, 
+                Length <= 1142) %>% # remove fish that are too big or too small to be correctly lengthed
+  group_by(OpCode) %>% 
+  summarise(
+    n_mature   = sum(Length > length_split, na.rm = TRUE),
+    n_immature = sum(Length <= length_split, na.rm = TRUE),
+    total   = n(),
+    .groups = "drop"
+  ) %>% 
+  rename(opcode = OpCode) %>% 
+  glimpse()
+
+length_dat <- rbind(length_gb, length_sw)
+length_dat <- full_join(metadata, length_dat, by = "opcode") %>% 
+  glimpse()
+
+
+### Find false zeroes ---------------------------------------------------------
+
+length_zeroes <- unique(length_dat$opcode[is.na(length_dat$total)]) # opcodes where no fish were lengthed. calculate here because this is zeroes not split by mature/immature which is what we want
+length_zeroes
+
 true_zeroes <- unique(maxn$opcode[maxn$maxn == 0]) # opcodes with no fish counted
+true_zeroes # opcodes where no fish were counted.
 
 false_zeroes <- setdiff(length_zeroes, true_zeroes) # opcodes where fish were counted, but not lengthed
+false_zeroes
 
-# check that these are actually false zeroes
-dat[dat$opcode %in% false_zeroes,]
-maxn[maxn$opcode %in% false_zeroes,]
+# put it all together
+glimpse(metadata)
+glimpse(length_dat)
+dat <- left_join(metadata, hab, by = "opcode") %>% 
+  glimpse()
+dat <- left_join(dat, length_dat %>% dplyr::select(-depth), by = "opcode") %>% 
+  glimpse()
 
-# remove these opcodes from the big data
-dat2 <- dat %>% 
-  dplyr::filter(!opcode %in% false_zeroes)
-length(unique(dat$opcode))
-length(unique(dat2$opcode))
+# remove false zeroes
+dat <- dat %>% 
+  dplyr::filter(!opcode %in% false_zeroes) %>% 
+  glimpse()
+
+# remove the couple drops that don't have habitat for some reason
+dat <- dat %>% 
+  dplyr::filter(!dplyr::if_any(c(sand, seagrass, reef, # remove drops where there is no habitat. otherwise the model removes them and outputs don't match with Harry's
+                                 preef.fit, preef.se.fit,
+                                 psand.fit, psand.se.fit,
+                                 pseagrass.fit, pseagrass.se.fit), is.na))
+dat[is.na(dat)] <- 0 # for drops where no snapper was seen, fill in with true zeroes.
+
+# pivot longer so we can use the data in the model
+dat_final <- dat %>%
+  pivot_longer(c(n_mature, n_immature)) %>%
+  dplyr::rename(size_class = name, count = value) %>% 
+  dplyr::select(!c("total")) %>% 
+  dplyr::filter(!opcode %in% c("GB-BV-182")) %>% # remove manually because doesn't have count data.
+  glimpse()
 
 saveRDS(dat, file = "data/output_data/03_A_habitat_affinity_outputs/03_A_tidy_data.rds")
 
@@ -211,18 +234,17 @@ saveRDS(dat, file = "data/output_data/03_A_habitat_affinity_outputs/03_A_tidy_da
 ## Actually try some models ---------------------------------------------------
 
 ## the aim of the analysis is to understand the relative affinity of mature and immature snapper to different habitat
-dat$depth2 <- dat$depth^2 # square depth
+dat_final$depth2 <- dat_final$depth^2 # square depth
 
 # check for correlation between predictors. nothing should be above 0.7.
-cor <- dat %>%
-  dplyr::select(depth, depth2, sand, reef, seagrass) %>%
+cor <- dat_final %>%
+  dplyr::select(depth = depth, depth2, sand, reef, seagrass) %>%
   cor(use = "complete.obs")
 corrplot::corrplot(cor, addCoef.col = T)
 # we're all good here (nothing over 0.7 except for depth and depth2 which is okay)
 
-
 ### 1. try the Poisson distribution -------------------------------------------
-glm_p <- glm(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+glm_p <- glm(data = dat_final, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
              count ~ depth + depth2 +
                size_class +
                reef + sand +
@@ -269,21 +291,22 @@ var(glm_p$residuals) # lol very much not. var>mean, overdispersion detected.
 
 
 # try predicted habitat
-glm_nb_p <- glm.nb(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+glm_nb_p <- glm.nb(data = dat_final, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
                  count ~ depth + depth2 +
                    size_class +
                    preef.fit + psand.fit +
                    size_class:depth +
                    size_class:depth2 +
                    size_class:preef.fit + 
-                   size_class:psand.fit # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
-)
+                   size_class:psand.fit, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
+                 link = log
+                 )
 
 # have a look at the diagnostics
 par(mfrow = c(2, 2))
 plot(glm_nb_p) # that looks decent
 
-summary(glm_nb_p) 
+print(summary(glm_nb_p))
 saveRDS(glm_nb_p, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds") # AS OF 06/03/2026 I AM USING THIS MODEL. 
 
 
