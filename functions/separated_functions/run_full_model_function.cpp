@@ -50,6 +50,8 @@ Rcpp::List run_full_model_function(
   Rcpp::List              catch_weight(n_fleets);
   Rcpp::List              fleet_fishing_effort(n_fleets);
   
+  arma::mat               F(max_cell, max_age, arma::fill::zeros); // just to test whether fishing mortality is realistic
+  
   for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
     master_catch_number_total(FLEET) = arma::cube(max_cell, 12, max_age, arma::fill::zeros);
     master_catch_weight_total(FLEET) = arma::cube(max_cell, 12, max_age, arma::fill::zeros);
@@ -144,27 +146,16 @@ Rcpp::List run_full_model_function(
                                                         weight, // age x month
                                                         selectivity, // age x month x year - likely will need to change by fleet
                                                         yearly_pop, // cell x month x age
-                                                        fleet_fishing_effort // from the effort_function - list of size n_fleets, made of vectors of size n_cell
+                                                        fleet_fishing_effort, // from the effort_function - list of size n_fleets, made of vectors of size n_cell,
+                                                        fleet_info
       );
       
       // also fill the master outputs
       arma::vec survived = Rcpp::as<arma::vec>(mortality_outputs["tot_survived"]);
       
-      //test
-      double max_surv = survived.max();
-      double sum_surv = arma::sum(survived);
-      
-      if (!arma::is_finite(max_surv) || max_surv > 1e10) {
-        Rcpp::Rcout << "⚠️ EXPLOSION at AGE=" << AGE
-                    << " MONTH=" << MONTH
-                    << " max_surv=" << max_surv
-                    << " sum_surv=" << sum_surv
-                    << std::endl;
-        Rcpp::stop("Numerical explosion detected");
-      }
-      //end test
-      
       master_pop_survived.slice(AGE).col(MONTH) = survived;
+      
+      F.col(AGE) = Rcpp::as<arma::vec>(mortality_outputs["fishing_mortality"]);
       
       // extract the catch
       Rcpp::List catch_weights_this_age = Rcpp::as<Rcpp::List>(mortality_outputs["catch_weight_by_fleet"]);
@@ -230,6 +221,7 @@ Rcpp::List run_full_model_function(
     
     // also add master outputs
     Rcpp::Named("yearly_pop") = yearly_pop, // outputs - 
+    Rcpp::Named("fishing_mortalities") = F, // checks only - 
     
     Rcpp::Named("catch_number_by_fleet") = master_catch_number_total, // cell x month x fleet
     Rcpp::Named("catch_weight_by_fleet") = master_catch_weight_total, // cell x month x fleet

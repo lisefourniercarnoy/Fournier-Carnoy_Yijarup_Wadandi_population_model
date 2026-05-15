@@ -58,10 +58,10 @@ Rcpp::List distribute_effort_function(
       util_now_vec.replace(0, 1e-10); // replace zeros before log
       
       arma::vec cell_coefficent_here_now = // Charlotte's CellCoef
-        arma::log(util_now_vec) * Rcpp::as<Rcpp::NumericVector>(coef_values["log_utility"])[0] +
+        arma::log(util_now_vec)            * Rcpp::as<Rcpp::NumericVector>(coef_values["log_utility"])[0] +
         expected_catch_2                   * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch"])[0] +
         expected_catch_sq_2                * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch_sq"])[0] + 
-        arma::log(cell_area)                          * Rcpp::as<Rcpp::NumericVector>(coef_values["log_cell_area"])[0];
+        arma::log(cell_area)               * Rcpp::as<Rcpp::NumericVector>(coef_values["log_cell_area"])[0];
       
       // arma::vec cell_utility_here_now = arma::exp(cell_coefficent_here_now);
       

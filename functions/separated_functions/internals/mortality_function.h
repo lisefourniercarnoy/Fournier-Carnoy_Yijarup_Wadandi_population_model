@@ -10,7 +10,9 @@ Rcpp::List mortality_function(
     arma::mat weight, // age x month
     arma::cube selectivity, // age x month x year
     arma::cube yearly_pop, // cell x month x age
-    Rcpp::List fleet_fishing_effort // from the effort_function - list of size n_fleets, made of vectors of size n_cell
+    Rcpp::List fleet_fishing_effort, // from the effort_function - list of size n_fleets, made of vectors of size n_cell
+    Rcpp::List fleet_info // a list with objects of different shapes that contain information relevant to the distribution of each fleet.
+
 ) {
   
   // constants for this age-month-year
@@ -28,9 +30,13 @@ Rcpp::List mortality_function(
   for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
     
     arma::vec effort_f    = Rcpp::as<arma::vec>(fleet_fishing_effort[FLEET]);
-    arma::vec finite_f    = effort_f * sel;
-    fleet_f.col(FLEET)    = finite_f;
-    total_f += finite_f;  // accumulate total F
+    
+    Rcpp::List current_fleet = fleet_info[FLEET]; // extract information for the current fleet
+    arma::vec catchability_now  = Rcpp::as<arma::cube>(current_fleet["catchability"]).slice(YEAR).col(MONTH);
+    
+    arma::vec F           = effort_f % catchability_now * sel; // instantaneous fishing mortality(AGE) = fishing effort * catchability * selectivity(AGE)
+    fleet_f.col(FLEET)    = F;
+    total_f += F;  // accumulate total F, as in https://academic.oup.com/icesjms/article/78/6/2043/6317566 -- sum of all fleets' fishing mortalities.
     
   }
 
@@ -53,6 +59,7 @@ Rcpp::List mortality_function(
   }
 
   return Rcpp::List::create(
+    Rcpp::Named("fishing_mortality")      = total_f, // vec(ncell) this is just for checking that fishing mortality is reasonable
     Rcpp::Named("tot_survived")           = tot_survived,
     Rcpp::Named("catch_numbers_by_fleet") = catch_numbers_by_fleet,
     Rcpp::Named("catch_weight_by_fleet")  = catch_weight_by_fleet
