@@ -263,6 +263,73 @@ ggplot() +
 ## cell area
 
 ## we will calculate: (depth fishability x temporal fishability * cell area) / total fishable area
+## 3.a depth fishability ------------------------------------------------------
+
+# this section of the fishing effort relates to boats being able to fish further over the years, with bigger boats, more powerful engines etc.
+# the model takes this into account by adding a 'fishable depth' into the mix, which goes more and more offshore.
+# for commercial fishing, we're assuming that on average, fishers can fish 1.3m more every year. (change as needed in parameters)
+NCELL <- nrow(water)
+
+# prepare grid cells
+plot(water$geometry)
+wa_mask <- st_read(file_wa); wa_mask <- st_transform(wa_mask, crs = crs_raster); wa_mask <- as(wa_mask, "Spatial"); plot(wa_mask, col = "lightgray", add = T)
+plot(bbox, add = T)
+
+# set parameters
+years <- year_start:year_end
+min_depth <- 20 # fishable depth is about 20m in 1945 (from Gaynor 2008, p.38)
+increase_year <- 1945 # the year that boats start to go deeper (post-war industrialisation)
+depth_per_year <- 1 # fishable depth gained per year (m) - arbitrary to reach the continental shelf quickly.
+
+# prepare the bathymetry layer
+bathy <- rast(file_bathy) %>%
+  project(crs_raster) %>% 
+  crop(as(water, "Spatial")) %>%
+  abs() %>%
+  terra::mask(vect(wa_mask), inverse = TRUE); plot(bathy)
+
+thresholds <- min_depth + pmax(0, depth_per_year*(years - increase_year)) # depth limits for each year
+
+fishable_stack <- rast(
+  lapply(thresholds, function(th) bathy <= th)
+)
+
+names(fishable_stack) <- paste0("year_", years)
+
+fishable_summary <- terra::extract(
+  fishable_stack,
+  vect(water),
+  fun = mean,
+  na.rm = TRUE
+)
+
+fishable_summary$ID <- water$ID
+
+fishable_depth_cell_year <- fishable_summary %>%
+  arrange(ID) %>%
+  dplyr::select(-ID) %>%
+  as.matrix()
+
+# strip "year_" prefix from colnames
+colnames(fishable_depth_cell_year) <- gsub("year_", "", colnames(fishable_depth_cell_year))
+
+fishable_depth_cell_month_year <- array(
+  aperm(replicate(12, fishable_depth_cell_year), c(1, 3, 2)),
+  dim = c(NCELL, 12, 125),
+  dimnames = list(NULL))
+
+fishable_depth_cell_month_year[is.nan(fishable_depth_cell_month_year)] <- 1 # replace NaN with 1 (these are shore cells that have depth 0)
+
+
+## sanity check station 
+test_year = 60
+test <- fishable_depth_cell_month_year[, 1, test_year]
+ggplot(data = water %>% mutate(test = test)) +
+  geom_sf(aes(fill = test), colour = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  labs(y = "Fishable proportion", colour = "Cell ID") +
+  theme_minimal()
+
 
 ## 3.b Temporal fishability ---------------------------------------------------
 
@@ -366,11 +433,11 @@ ggplot(data = water %>% mutate(test = test)) +
 ### 3.b.b calculate catchability ----------------------------------------------
 
 glimpse(water_area)
-
-fishable_area <- water_area
+glimpse(fishable_depth_cell_month_year)
+fishable_area <- water_area * fishable_depth_cell_month_year
 
 ## sanity check station 
-test_year = 80
+test_year = 120
 test <- fishable_area[, 1, test_year]
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
@@ -388,7 +455,7 @@ dim(fishable_area_sum)
 
 
 ## sanity check station 
-test_year = 120
+test_year = 125
 test <- catchability[, 1, test_year]
 mapview::mapview(water %>% dplyr::select(!where(is.list)) %>% mutate(test = test), zcol = "test")
 
@@ -497,7 +564,7 @@ for (YEAR in 1:n_years_tot) {
 plot(x = 1:125, y = distributed_effort[1,1,])
 lines(x = 1:125, y = distributed_effort[1,15,])
 lines(x = 1:125, y = distributed_effort[1,10,], col = "red", pch = 3)
-
+# ugly as heck but this way the effort is a bit smooth.
 
 
 # okay combine into a month x access point x year cube
@@ -522,7 +589,7 @@ coef_values <- tibble(log_utility = -0.848,
                       expected_catch = 1.5,
                       expected_catch_sq = -1.171,
                       log_cell_area = 1.134
-) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing so these are all 1.
+) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing
 
 
 fishing_info_list <- list(catchability, utility, access_point_effort, cell_area_m2, coef_values)
