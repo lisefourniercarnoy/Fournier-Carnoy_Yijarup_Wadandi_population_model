@@ -42,6 +42,9 @@ colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 
 ## STEP 0: set up life history ------------------------------------------------
 
+year_end <- 2024
+year_start <- 1900
+
 ### life history parameters ----
 
 # set timestep 
@@ -238,7 +241,7 @@ equil_recr <- (fished_f_sb-alpha)/(beta*fished_f_sb) # this says 'however, under
 ## so far the fished and unfished populations and spawning biomasses were hypothetical, for a single recruit.
 ## here we scale the spawning biomasses to the level of recruitment, to make a starting population.
 
-init_recr <- 10000 # in thousands - 4000 is too small
+init_recr <- 5000 # in thousands - 4000 is too small
 
 # calculate initial fished recruitment (how many new fish from the fished population)
 init_fished_recr <- (fished_f_sb-alpha) / (fished_f_sb*beta) * init_recr 
@@ -357,7 +360,7 @@ sel_ret <- NULL
 mll_change_1988_year <- 1988 - 1945
 mll_change_2008_year <- 2008 - 1945
 mll_change_2009_year <- 2009 - 1945
-max_year <- 2024 - 1945
+max_year <- year_end - year_start
 
 for(i in 1:(mll_change_1988_year-1)){
   sel_ret <- abind(sel_ret, sel_ret_1977_1988, along = 3)
