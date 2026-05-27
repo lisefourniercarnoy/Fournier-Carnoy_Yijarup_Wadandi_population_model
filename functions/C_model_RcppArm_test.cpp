@@ -4,6 +4,7 @@
 // THIS FUNCTION IS THE SAME AS CHARLOTTE'S BUT WAS ANNOTATED BY LISE (for her brain)
 // RECRUITMENT FUNCTION WAS CHANGED (referred to the spawning month of fish, changed from 9 -october- to 10 -november-)
 
+
 // [[Rcpp::export]]
 arma::vec movementfunc_cpp(const int AGE, 
                            const int MONTH, 
@@ -36,6 +37,7 @@ arma::vec movementfunc_cpp(const int AGE,
   
   return All_Movers;
 }
+
 
 // [[Rcpp::export]]
 Rcpp::List mortalityfunc_cpp(const int AGE, 
@@ -163,6 +165,7 @@ Rcpp::List recruitmentfunc_cpp(const int MaxCell,
   
 }
 
+
 // [[Rcpp::export]]
 Rcpp::List RunModelfunc_cpp(const int YEAR, 
                             const int MaxAge, 
@@ -176,6 +179,7 @@ Rcpp::List RunModelfunc_cpp(const int YEAR,
                             arma::mat AdultMove, 
                             arma::mat Mature, 
                             arma::mat Weight, 
+                            arma::vec spawn_months,
                             arma::vec Settlement,
                             arma::cube YearlyTotal, 
                             arma::cube Selectivity_com, // input 3 selectivities instead of Charlotte's 1
@@ -306,8 +310,8 @@ Rcpp::List RunModelfunc_cpp(const int YEAR,
     
     // 3. Recruitment
     
-    if (MONTH==10) { // October = spawning
-      recruits = recruitmentfunc_cpp(MaxCell, MaxAge, BHa, BHb, PF, ha_scaling, Mature, Weight, Settlement, YearlyTotal);
+    if (any(spawn_months-1 == MONTH)) { 
+      recruits = recruitmentfunc_cpp(MONTH, MaxCell, MaxAge, BHa, BHb, PF, ha_scaling, Mature, Weight, Settlement, YearlyTotal);
       
       settle_recs = recruits["settle_recs"];
       BH_recs = recruits["BH_recs"];
