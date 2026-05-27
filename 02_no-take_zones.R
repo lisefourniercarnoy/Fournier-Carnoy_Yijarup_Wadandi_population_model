@@ -302,10 +302,14 @@ water <- st_make_valid(water) %>%
 # give a new cell ID to all cells, because a few were cut in two in the process
 water$ID <- 1:nrow(water)
 
-mapview::mapview(water[!is.list(water)])
+mapview::mapview(water[!is.list(water)], alpha = 0.1)
 
 ## Save files for next step ---------------------------------------------------
 
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
+water %>%
+  dplyr::select(-TC_restriction_date, -TC_restriction_months, 
+                -TC_restriction_perc_fished, -SC_restriction_date) %>%
+  st_write("data/output_data/02_watergrid.shp", append = F)
 
 ### END ###
