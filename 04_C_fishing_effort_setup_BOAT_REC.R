@@ -474,7 +474,6 @@ ggplot(data = water %>% mutate(test = test)) +
 # we will (b.) split the yearly effort into months, then (c.) split the monthly effort into access points (boat ramps).
 
 
-
 ## 4.a. enter the overall effort values (boat days) ---------------------------
 
 g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_boat_days_total (19-01-2026).csv", skip = 1) %>% 
