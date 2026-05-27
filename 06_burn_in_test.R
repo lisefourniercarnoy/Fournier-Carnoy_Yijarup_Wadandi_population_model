@@ -8,7 +8,7 @@
 
 # -----------------------------------------------------------------------------
 
-# Status: THIS IS  A TEST MODIFICATION OF THE SINGLE-FLEET BURN IN CODE. SO FAR IT WORKS FINE
+# Status: Doing checks here and there but it's functioning. might need to play with the initial recruitment a bit
 
 # -----------------------------------------------------------------------------
 
@@ -28,11 +28,11 @@ sourceCpp("functions/separated_functions/run_full_model_function.cpp", verbose =
 
 ## Read files -----------------------------------------------------------------
 
-water             <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
+water <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
 
 ## Get model parameters -------------------------------------------------------
 
-n_yrs_modelled <- 20 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
+n_yrs_modelled <- 60 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
 
 max_cell    <- nrow(water) # Number of cells in the model
 max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
@@ -54,9 +54,9 @@ settlement      <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse(
 adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
 
 fleet_names <- c(
-  #"commercial"#, 
-  "boat_rec"#, 
-  #"shore_rec"
+  "commercial", 
+  "boat_rec", 
+  "shore_rec"
                  )
 com_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds") %>% glimpse()
 com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
@@ -74,12 +74,12 @@ brec_info$fishing_days[,,1:dim(brec_info$fishing_days)[[3]]] <- brec_info$fishin
 srec_info$fishing_days[,,1:dim(srec_info$fishing_days)[[3]]] <- srec_info$fishing_days[,,1]
 
 # add scaling for each fleet, to account for different gears being less efficient, compared to commercial. see g-sheets Fishing effort reconstruction
-brec_info$fishing_days <- brec_info$fishing_days * 0.081
+brec_info$fishing_days <- brec_info$fishing_days * 0.1
 srec_info$fishing_days <- srec_info$fishing_days * 0.017
 
-fleet_info = list(#com_info#, 
-                  brec_info
-                  #srec_info
+fleet_info = list(com_info, 
+                  brec_info,
+                  srec_info
                   )
 
 
@@ -104,6 +104,9 @@ for(AGE in 1:max_age){
 cat("Total fish initialised:", sum(yearly_pop), "\n")
 cat("Age structure check:\n")
 print(round(colSums(yearly_pop[,1,])))
+
+
+## start the burn-in ----------------------------------------------------------
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
@@ -143,57 +146,51 @@ End = Sys.time()
 Runtime = End - Start
 Runtime
 
-# finite f check (fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa)
+## a few sanity checks --------------------------------------------------------
 
-f <- 1 - exp(-(fishing_mortality)) # the % of fish removed from the population over a period of time x
+### finite f ------------------------------------------------------------------
+
+# finite fishing mortality (f) is the % of fish removed from the population over any time period.
+# (fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa)
+f <- 1 - exp(-(fishing_mortality)) 
 
 age_to_plot <- 10
 age_f <- as.vector(f[, age_to_plot])
 water2 <- readRDS("data/output_data/02_watergrid.rds")
 water2$f <- age_f
 
-ggplot(water2) +
-  geom_sf(aes(fill = f)) +
-  scale_fill_viridis_c() +
-  labs(
-    title = paste0("Fishing mortality - Age ", age_to_plot),
-    fill = "Population"
-  ) +
-  theme_minimal()
 mapview::mapview(water2[,c("geometry", "f")], zcol = "f")
 
 
-## check whether the burn-in population is stable
+### burn-in population stability over time ------------------------------------
+
 total_pop <- lapply(BURN_IN_pop, function(x) rowSums(x, dims = 2))
 tot_pop2 <- sapply(total_pop, function(x) sum(x[, 12]))
 plot(tot_pop2)
 
-#age structure of the burn-in population in the last time step
+
+### age structure in the last time step ---------------------------------------
+
 plot(colSums(yearly_pop[,12,]))
 
-# check where fish are more densely populated.
-year_to_plot <- 10
+
+### fish density --------------------------------------------------------------
+
+year_to_plot <- 1
 month_index <- 12
 monthly_fish_df <- as.data.frame(yearly_pop[,,year_to_plot])
+
 colnames(monthly_fish_df) <- paste0("month_", 1:12)
 water <- readRDS("data/output_data/02_watergrid.rds")
 water2 <- cbind(water, monthly_fish_df)
 month_col <- paste0("month_", month_index)
-ggplot(water2) +
-  geom_sf(aes(fill = .data[[month_col]])) +
-  scale_fill_viridis_c() +
-  labs(
-    title = paste0("Fish population - Age ", year_to_plot),
-    fill = "Population"
-  ) +
-  theme_minimal()
+
+water2$test <- water2[[month_col]]/water2$cell_area
+mapview::mapview(water2[,c("geometry", "test")], zcol = "test")
 
 
+### relative catch of fleets --------------------------------------------------
 
-
-ModelOutput$catch_weight_by_fleet[1,]
-
-# check how powerful fleets are relative to each other ----
 avg_weight <- sum(ModelOutput$catch_weight_by_fleet[1,][[1]]) / 
   sum(ModelOutput$catch_number_by_fleet[1,][[1]])
 
@@ -214,6 +211,9 @@ ggplot(plot_df, aes(x = fleet, y = catch_kg, fill = fleet)) +
   theme(legend.position = "none")
 
 
+## save the burn-in population ------------------------------------------------
+
+saveRDS(yearly_pop, file = "data/output_data/06_burn_in_population.rds")
 
 
 ## BELOW IS ARCHIVE -----------------------------------------------------------
