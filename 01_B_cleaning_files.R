@@ -320,7 +320,7 @@ water_sf <- full_grd %>%
   st_cast("MULTIPOLYGON") %>%  # cast to MULTIPOLYGON to preserve complex geometry
   st_transform(common_crs)
 
-# remove grid cells southeast of black point
+# remove grid cells southeast of black point - to align with stock assessment boundaries.
 water_ll <- st_transform(water_sf, 4326)   # transform to lat and long just to cut out
 coords <- st_coordinates(st_centroid(water_ll))
 water <- water_ll[c(
