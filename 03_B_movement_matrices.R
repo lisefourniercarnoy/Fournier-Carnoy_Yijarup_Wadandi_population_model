@@ -308,7 +308,11 @@ max(adult_hab_attractivity)
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-cell_area_km2 <- as.numeric(water$cell_area) * 1e-6  # convert m² to km²
+water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km², add a constant
+# difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
+# logging accounts for this different relationship. otherwise large cells are wayyyy too attractive. (see )
+
+cell_area_km2 <- log(water$cell_area) 
 cell_utility <- exp(adult_hab_attractivity) * matrix(cell_area_km2, 
                                                      nrow = NCELL, 
                                                      ncol = NCELL, 
