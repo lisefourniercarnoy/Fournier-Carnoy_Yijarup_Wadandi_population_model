@@ -162,8 +162,6 @@ ggplot(water_dist_long %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[
   labs(title = "Cell distance to access points", fill = "Distance (km)") +
   theme_minimal()
 
-ggsave("plots/checking_plots_during_setup/04_A_commercial_boat_ramp_distance.png", plot = last_plot(), height = 10, width = 10)
-
 
 ## 1.c calculate travel cost --------------------------------------------------
 
@@ -324,12 +322,11 @@ fishable_depth_cell_month_year[is.nan(fishable_depth_cell_month_year)] <- 1 # re
 
 
 ## sanity check station 
-test_year = 60
+test_year = 110
 test <- fishable_depth_cell_month_year[, 1, test_year]
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
 
 
@@ -427,7 +424,6 @@ test <- water_area[, 1, test_year]
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
 
 ### 3.b.b calculate catchability ----------------------------------------------

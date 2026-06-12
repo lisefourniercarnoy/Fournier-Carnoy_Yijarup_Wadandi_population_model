@@ -56,7 +56,7 @@ water <- readRDS(file_water) %>%
 
 land <- st_read(file_land)
 
-bathy <- raster::raster(file_bathy)#; plot(bathy)
+bathy <- raster::raster(file_bathy)
 
 # extract 
 water$depth <- exactextractr::exact_extract(
@@ -77,13 +77,14 @@ ggplot(water) +
 
 ## Calculate cell centroids and distance-to-neighbour-cells -------------------
 
-# Get centroids for the grid cells - CHARLOTTE HAS A LOT MORE COLUMNS TO HER CENTROIDS DATASET ???
+# Get centroids for the grid cells
 centroids <- st_centroid_within_poly(water)
+
 plot(centroids[, !sapply(centroids, is.list)], cex=0.3) #plotting all but list-columns
 
 # Get the number of cells in the model, this will allow to to calculate distances and habitat cover differences.
 points <- as.data.frame(st_coordinates(centroids))%>%
-  mutate(ID=row_number())
+  mutate(ID = row_number())
 NCELL <- nrow(points)
 
 # Convert the points in the centroids of the polygon to a spatial points file
@@ -204,7 +205,7 @@ summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
 ## Save files to use in the next step -----------------------------------------
 
 saveRDS(network_matrix, file = "data/output_data/03_B_network_matrix.rds")
-saveRDS(water, file="data/output_data/03_B_water.rds")
+saveRDS(water, file = "data/output_data/03_B_water.rds")
 
 ## Create connectivity matrix for fish movement -------------------------------
 
@@ -212,17 +213,19 @@ saveRDS(water, file="data/output_data/03_B_water.rds")
 # Calculate the probability a fish moves to this site in a given time step using a swimming speed.
 # This creates a dispersal kernel based on the negative exponential distribution.
 
-# network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
-# 
+network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
+
+## below is hashed out because it takes a while to run. rerun if needed.
+
 # pDist <- matrix(NA, ncol=NCELL, nrow=NCELL)
 # for(r in 1:NCELL){
 #   for(c in 1:NCELL){
 #     p <- network_matrix[r,c]*1
 #     pDist[r,c] <- p
-#   } 
+#   }
 # } # this loop compares the distance of cell 1 with every other cell, cell 2 with every other cell, cell 3....
-# 
-# 
+
+
 # Calculate the difference in habitat types between each of the cells i.e. will there be an increase in reef % if you go from cell 1 to cell 2
 habitat_types <- c("reef", "seagrass", "sand")
 habitat_perc <- list(
@@ -257,8 +260,6 @@ glimpse(p_habitat)
 
 # saveRDS(pDist, "data/output_data/03_B_pDist.rds")
 # saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
-
-pDist <- readRDS("data/output_data/03_B_pDist.rds")
 
 
 ## Create adult movement probability using utility function -------------------

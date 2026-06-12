@@ -322,7 +322,7 @@ water_sf <- full_grd %>%
 
 # remove grid cells southeast of black point - to align with stock assessment boundaries.
 water_ll <- st_transform(water_sf, 4326)   # transform to lat and long just to cut out
-coords <- st_coordinates(st_centroid(water_ll))
+coords <- st_coordinates(st_centroid(st_make_valid(water_ll)))
 water <- water_ll[c(
   coords[, "X"] <= 115.543734 |
     coords[, "Y"] >= -34.413498), 
@@ -357,4 +357,3 @@ plot(water_sf)
 saveRDS(water_sf, "data/output_data/01_B_water.rds")
 
 ## END ##
-
