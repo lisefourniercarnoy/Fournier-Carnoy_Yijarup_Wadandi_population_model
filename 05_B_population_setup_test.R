@@ -43,7 +43,6 @@ year_end <- 2024
 year_start <- 1900
 n_yrs <- 2024-1900 # number of years modelled
 
-step = 1/12 # monthly timestep
 max_age <- 40 # table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
 
 
@@ -125,7 +124,9 @@ eq.init.fish <-  0.025 # this is equilibrium instantaneous fishing mortality?? a
 
 # below we use the published life history values to obtain mean values of length-at-age and the weight-at-mean-length-at-age.
 mean_life_hist <- data.frame(
-  age = seq(1, 1 + step * (max_age * 12 - 1), by = step)) %>% # each age (1, 2, 3 year old) is split into 12
+  #age = seq(1, 1 + step * (max_age * 12 - 1), by = step)) %>% # each age (1, 2, 3 year old) is split into 12 - this was before i made this into a yearly thing.
+  age = 1:max_age) %>%
+  
   mutate(
     length = ((l1^b+(l2^b-l1^b))*((1-exp(-a*(age-t1)))/(1-exp(-a*(t2-t1)))))^(1/b), # this is the Schnute equation, replaces the VB equation.
     # length_vb = Linf * (1 - exp(-k * (age - t0))), # this is the old VB equation
@@ -156,6 +157,11 @@ length_age_matrix <- length_age_matrix / rowSums(length_age_matrix) # normalise 
 dimnames(length_age_matrix) <- list(mean_life_hist$age, lengths_1cm)
 summary(rowSums(length_age_matrix))  # should all be 1
 
+# we also need to know the length-weight relationship for our lengths
+length_weight <- data.frame(length = lengths_1cm) %>% 
+  mutate(weight = WLa * (length^WLb) / 1000 # divide by 1000 to get in kg
+         )
+
 # okay so this matrix is going to be the base on which most things get calculated downstream.
 library(ggridges)
 
@@ -164,7 +170,6 @@ as.data.frame(length_age_matrix) %>%
   mutate(age = as.numeric(rownames(length_age_matrix))) %>% 
   pivot_longer(cols = -age, names_to = "length_bin", values_to = "density") %>% 
   mutate(length_bin = as.numeric(length_bin)) %>% 
-  filter(age %in% as.numeric(rownames(length_age_matrix))[seq(1, nrow(length_age_matrix), by = 12)]) %>% 
   group_by(age) %>% 
   mutate(density_scaled = density / max(density)) %>% # normalise each age to peak = 1
   ungroup() %>% 
@@ -293,12 +298,11 @@ bin_breaks <- seq(5, max_length+100, by = 10) # +100 for extra big fish
 bin_labels <- seq_along(bin_breaks[-1])  # indices 1 to n_bins
 
 bin_mids <- bin_breaks[-length(bin_breaks)] + 5  # midpoints
+n_bins <- length(bin_labels)
+
+ATM <- matrix(0, nrow = n_bins, ncol = n_bins)
 rownames(ATM) <- bin_mids
 colnames(ATM) <- bin_mids
-
-n_bins <- length(bin_labels)
-ATM <- matrix(0, nrow = n_bins, ncol = n_bins)
-
 # assign each fish to release and recapture bins
 tag_recap$release_bin <- cut(tag_recap$release_length, 
                              breaks = bin_breaks, labels = FALSE)
@@ -321,14 +325,15 @@ for (i in 1:n_bins) {
   ATM[i,] <- probs / sum(probs) # scale so it all adds up to 1
 }
 
-head(ATM) # and that's the age transition matrix!
+# the last bin is NAN, so need to fix it manually. largest fish stay in their length bin
+ATM[nrow(ATM), ] <- 0
+ATM[nrow(ATM), nrow(ATM)] <- 1
+
+tail(ATM) # and that's the age transition matrix!
 
 # rename for clarity
 colnames(ATM) <- lengths
 rownames(ATM) <- lengths
-
-
-saveRDS(ATM, "data/output_data/05_age_transition_matrix.rds")
 
 
 ## STEP 2: set up a hypothetical unfished population ==========================
@@ -365,7 +370,7 @@ age_survival <- data.frame(
   glimpse()
 age_survival[1, "survival"] <- R0*prop_f # survival probability on age 1
 for (r in 2:nrow(age_survival)){
-  age_survival[r, "survival"] <- age_survival[r-1, "survival"]*exp(-M/12) 
+  age_survival[r, "survival"] <- age_survival[r-1, "survival"]*exp(-M) 
 } # this calculates the survival in the next age based on the previous age
 
 plot(x = age_survival$age, 
@@ -375,13 +380,14 @@ plot(x = age_survival$age,
 
 
 # put it all together
-unfished_pop_ssb <- sweep(length_age_matrix, MARGIN = 1, length_mature_biomass$mature_biomass, FUN = "*")
-test <- sweep(unfished_pop_ssb, MARGIN = 2, age_survival$survival, FUN = "*")
+unfished_pop_ssb <- sweep(length_age_matrix, MARGIN = 2, length_mature_biomass$mature_biomass, FUN = "*")
+test <- sweep(unfished_pop_ssb, MARGIN = 1, age_survival$survival, FUN = "*")
 
-# below we are taking a hypothetical female, which we weigh every year (12th month), to figure out how much total spawning biomass it contributes over its lifetime.
-# with the matrix, we're kind of collapsing the uncertainty (summing), so that we get a single value.
-unfished_female_spawning_biomass <- sum(test[seq(12, length(test), by = 12)])
-unfished_female_spawning_biomass # about 64kg
+# below we are taking a hypothetical female, which we weigh every year, to figure out how much total spawning biomass it contributes over its lifetime. (taking into account natural mortality)
+# with the matrix, we're kind of collapsing the uncertainty in length (summing), so that we get a single value.
+unfished_female_spawning_biomass <- sum(test)
+unfished_female_spawning_biomass # about 24kg
+
 
 ### Calculate Beverton-Holt parameters for the unfished population ----
 
@@ -412,23 +418,25 @@ fished_pop_setup <- fished_pop_setup %>%
 fished_pop_setup[1, "survival"] <- R0*prop_f # survival probability on age 1
 
 for (r in 2:nrow(fished_pop_setup)){
-  fished_pop_setup[r, "survival"] <- fished_pop_setup[r-1, "survival"]*exp(-fished_pop_setup[r-1, "total_mortality"]*step) # Divide by the time step here
+  fished_pop_setup[r, "survival"] <- fished_pop_setup[r-1, "survival"]*exp(-fished_pop_setup[r-1, "total_mortality"]) # Divide by the time step here
 } # this calculates the survival in the next age based on the previous age
 
 # put it all together
-fished_pop_ssb <- sweep(length_age_matrix, MARGIN = 1, length_mature_biomass$mature_biomass, FUN = "*")
-fished_pop_ssb <- sweep(fished_pop_ssb, MARGIN = 2, fished_pop_setup$survival, FUN = "*")
+fished_pop_ssb <- sweep(length_age_matrix, MARGIN = 2, length_mature_biomass$mature_biomass, FUN = "*")
+fished_pop_ssb <- sweep(fished_pop_ssb, MARGIN = 1, fished_pop_setup$survival, FUN = "*")
 
 # below we are taking a hypothetical female, which we weigh every year (12th month), to figure out how much total spawning biomass it contributes over its lifetime.
 # with the matrix, we're kind of collapsing the uncertainty (summing), so that we get a single value.
-fished_female_spawning_biomass <- sum(fished_pop_ssb[seq(12, length(fished_pop_ssb), by = 12)])
-fished_female_spawning_biomass # about 58kg, lower than unfished, which makes sense because a fished population will have fewer big fish (spawners)
+fished_female_spawning_biomass <- sum(fished_pop_ssb)
+fished_female_spawning_biomass # about 18kg, lower than unfished, which makes sense because a fished population will have fewer big fish (spawners)
 
 
 ### Spawner per recruit and equilibrium recruitment ----
 
-spr <- fished_female_spawning_biomass/unfished_female_spawning_biomass # this says 'under fished equilibrium, 1 recruit loses ~10% (1-spr) of its reproductive output over her lifetime compared to unfished equilibrium'
-equil_recr <- (fished_female_spawning_biomass-alpha)/(beta*fished_female_spawning_biomass) # this says 'however, under fished equilibrium, 1 recruit produces ~99% of its unfished recruitment (because there is lower density of fish)
+spr <- fished_female_spawning_biomass/unfished_female_spawning_biomass 
+(1 - spr) # this says 'under fished equilibrium, 1 recruit loses ~24% (1-spr) of its reproductive output over her lifetime compared to unfished equilibrium'
+equil_recr <- (fished_female_spawning_biomass-alpha)/(beta*fished_female_spawning_biomass) 
+equil_recr # this says 'however, under fished equilibrium, 1 recruit produces ~97% of its unfished recruitment (because there is lower density of fish)
 # the density-dependence is visible here: fewer spawners = population below carrying capacity = more recruits
 
 
@@ -463,13 +471,15 @@ age_starting_pop <- data.frame(
 
 age_starting_pop[1, "n"] <- n_f_recr
 
-for (r in 2:(max_age*12)){ 
-  age_starting_pop[r, "n"] <- age_starting_pop[r-1, "n"] * exp(-fished_pop_setup[r-1, "total_mortality"] * step) # divide by the time step here
+for (r in 2:(max_age)){ 
+  age_starting_pop[r, "n"] <- age_starting_pop[r-1, "n"] * exp(-fished_pop_setup[r-1, "total_mortality"])
 } # this calculates the survival in the next age based on the previous age using total mortality from our fished population
 
 
-# okay so now we know that our starting population has ~2456 fish of age 1, but not all will be the same length. we'll use our age-length matrix to figure out how many there are of each length.
+# okay so now we know that our starting population has ~2400 fish of age 1, but not all will be the same length. we'll use our age-length matrix to figure out how many there are of each length.
 age_length_starting_pop <- sweep(length_age_matrix, MARGIN = 1, age_starting_pop[, "n"], FUN = "*")
+plot(age_length_starting_pop[, "800"], type = "l") # how many fish of 800mm are there, and what are their ages?
+plot(age_length_starting_pop[, "400"], type = "l") # how many fish of 400mm are there, and what are their ages?
 
 ## These fish form our starting population for the model
 ## At the end of the year the spawning stock biomass of all females will be calculated to generate recruitment for the next year
@@ -507,8 +517,6 @@ sel_at_length$selectivity <- length_to_sel(as.numeric(sel_at_length$length) + 5)
 # manually fill bins that are too-big and too-small (they're not observed in the sel-at-age so need to be manually filled)
 sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 < min(mean_life_hist$length)] <- 0
 sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 > max(mean_life_hist$length)] <- 1
-
-
 
 ## okay now to calculate things
 ret <- array(0,
@@ -557,6 +565,9 @@ saveRDS(age_length_starting_pop, file = paste0("data/output_data/05_starting_pop
 lengths
 saveRDS(lengths, file = "data/output_data/05_length_bins.rds")
 
+# age-transition matrix
+saveRDS(ATM, "data/output_data/05_age_transition_matrix.rds")
+
 # selectivity
 selectivity <- fished_pop_setup$selectivity
 saveRDS(selectivity, file = "data/output_data/05_selectivity.rds")
@@ -567,7 +578,7 @@ maturity <- length_mature_biomass$maturity
 saveRDS(maturity, file = "data/output_data/05_maturity.rds")
 
 # weight of each age group
-weight <- mean_life_hist$weight
+weight <- length_weight$weight
 saveRDS(weight, file = "data/output_data/05_weight.rds")
 
 # Beverton-Holt parameters
