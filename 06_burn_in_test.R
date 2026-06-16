@@ -36,6 +36,7 @@ n_yrs_modelled <- 60 # number of burn-in years - at least a fish's full life. do
 
 max_cell    <- nrow(water) # Number of cells in the model
 max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
+n_length    <- length(readRDS("data/output_data/05_length_bins.rds"))
 max_year    <- n_yrs_modelled # Number of years the model should run for 
 
 starting_pop  <- readRDS("data/output_data/05_starting_population.rds") %>% glimpse()
@@ -87,19 +88,20 @@ fleet_info = list(com_info,
 
 total <- array(0, dim = c(max_year, 1))
 
-yearly_pop <- array(0, dim = c(max_cell, 12, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
+current_pop <- array(0, dim = c(max_cell, n_length, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
 
 BURN_IN_pop <- list() # keep record of the burn-in outputs
 BURN_IN_catch_weight <- list()
 BURN_IN_catch_number <- list()
 
-yearly_pop <- array(0, dim = c(max_cell, 12, max_age))
-
 for(AGE in 1:max_age){
-  total_this_age <- starting_pop[AGE, "N"]  # or starting_pop[AGE, 1]
+  total_this_age <- starting_pop[AGE, ]
   # distribute proportionally to settlement — same habitat weighting as recruits
-  yearly_pop[, 1, AGE] <- (settlement / sum(settlement)) * total_this_age
-}
+  settlement_prop <- settlement / sum(settlement)         # length max_cell
+  
+  # outer product: each cell's proportion × each length-class abundance
+  current_pop[, , AGE] <- settlement_prop #total_this_age
+  }
 
 cat("Total fish initialised:", sum(yearly_pop), "\n")
 cat("Age structure check:\n")
