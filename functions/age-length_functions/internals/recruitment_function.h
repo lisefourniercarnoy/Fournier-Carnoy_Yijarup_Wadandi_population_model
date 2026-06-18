@@ -6,27 +6,22 @@ Rcpp::List recruitment_function(
     const double BHb,            // Beverton-Holt parameter
     const double PF,             // proportion of females 
     const double ha_scaling,     // hyperallometry scaling factor
-    arma::vec maturity,          // vec of size ncell of the proportion of the each length to be mature.
-    arma::vec weight,            // vec of size ncell of the weight of each length.
-    arma::vec settlement,        // vector of size max_cell giving probability of recruiting in each cell (based on habitat etc.)
-    arma::cube current_pop       // numbers of fish in each cell x length x age
+    const arma::vec maturity,          // vec of size ncell of the proportion of the each length to be mature.
+    const arma::vec weight,            // vec of size ncell of the weight of each length.
+    const arma::vec settlement,        // vector of size max_cell giving probability of recruiting in each cell (based on habitat etc.)
+    const arma::cube current_pop       // numbers of fish in each cell x length x age
 ) {
 
   arma::mat SB_age(max_cell, max_age, arma::fill::zeros);
   arma::vec ha_weight = arma::pow(weight, ha_scaling); // vec of size n_lengths — fecundity per fish, adjusted for hyperallometry
+  arma::vec maturity_x_haweight = maturity % ha_weight;  // n_lengths vec — spawning weight (not specific to the current pop)
+  
+  double total_female_SB = 0.0;
   
   for (int AGE = 0; AGE < max_age; AGE++) {
-    arma::mat pop_age = current_pop.slice(AGE); // cell x length
-    
-    arma::mat pop_mature = pop_age.each_row() % maturity.t(); // cell x length, number of mature fish of each length at current spawning month
-    arma::vec weight_spawning = arma::sum(pop_mature.each_row() % ha_weight.t(), 1); // vec of size ncell, weight of spawning fish of each age at current spawning month??
-    
-    SB_age.col(AGE) = PF * weight_spawning; // vec of size ncell. spawning biomass, corrected for hyperallometry
-    
+    arma::vec weight_spawning = current_pop.slice(AGE) * maturity_x_haweight; // spawning weight specific to the current pop
+    total_female_SB += PF * arma::sum(weight_spawning); // Sum across ages and cells to get total effective spawning output
   }
-
-  // Sum across ages and cells to get total effective spawning output
-  double total_female_SB = arma::accu(SB_age);
   
   // Standard BH on the hyperallometry-adjusted spawning output
   double tot_recs_before_var = total_female_SB / (BHa + BHb * total_female_SB);

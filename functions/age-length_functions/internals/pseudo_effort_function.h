@@ -28,7 +28,7 @@ Rcpp::List pseudo_effort_function(
     double sigma = 0.5;
     double uncertainty = exp(R::rnorm(0, sigma) - ((sigma * sigma) / 2)); // exp() because
     arma::vec temp = past_month_cpue * uncertainty; // transform into *expected catch* by adding uncertainty - store in a temporary object
-    expected_catch[i] = temp; // transform into *expected catch* by adding uncertainty
+    expected_catch[i] = temp; 
     expected_catch_sq[i] = arma::pow(temp, 2); // square it
 
   }
