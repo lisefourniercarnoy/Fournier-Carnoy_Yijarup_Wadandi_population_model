@@ -24,7 +24,7 @@ library(abind) # for dealing with arrays i think.
 
 ## Read in the functions ------------------------------------------------------
 
-sourceCpp("functions/separated_functions/run_full_model_function.cpp", verbose = TRUE)
+sourceCpp("functions/age-length_functions/run_full_model_function.cpp", verbose = TRUE)
 
 ## Read files -----------------------------------------------------------------
 
@@ -32,11 +32,11 @@ water <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
 
 ## Get model parameters -------------------------------------------------------
 
-n_yrs_modelled <- 60 # number of burn-in years - at least a fish's full life. doing 50 here like Charlotte
+n_yrs_modelled <- 5 # number of burn-in years - at least a fish's full life.
 
 max_cell    <- nrow(water) # Number of cells in the model
-max_age     <- 40-1 # The max age of the fish in the model, see script 05 for correct value (-1 to account for the fact that Rcpp functions start from 0)
-n_length    <- length(readRDS("data/output_data/05_length_bins.rds"))
+max_age     <- 40 # The max age of the fish in the model, see script 05 for correct value
+n_lengths   <- length(readRDS("data/output_data/05_length_bins.rds"))
 max_year    <- n_yrs_modelled # Number of years the model should run for 
 
 starting_pop  <- readRDS("data/output_data/05_starting_population.rds") %>% glimpse()
@@ -49,9 +49,9 @@ BHa           = as.double(readRDS("data/output_data/05_Beverton-Holt_alpha.rds")
 BHb           = as.double(readRDS("data/output_data/05_Beverton-Holt_beta.rds")) # see script 05
 PF            = 0.5 # proportion expected to be females
 hyperallo     = (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
-mature          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
-settlement      <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse() #; settlement <- settlement[, 1] # selecting a single column because the function expects a vector
-
+mature         <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
+settlement     <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse() #; settlement <- settlement[, 1] # selecting a single column because the function expects a vector
+age_transition <- readRDS("data/output_data/05_age_transition_matrix.rds") %>% glimpse()
 adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
 
 fleet_names <- c(
@@ -88,7 +88,7 @@ fleet_info = list(com_info,
 
 total <- array(0, dim = c(max_year, 1))
 
-current_pop <- array(0, dim = c(max_cell, n_length, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
+current_pop <- array(0, dim = c(max_cell, n_lengths, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
 
 BURN_IN_pop <- list() # keep record of the burn-in outputs
 BURN_IN_catch_weight <- list()
@@ -97,15 +97,15 @@ BURN_IN_catch_number <- list()
 for(AGE in 1:max_age){
   total_this_age <- starting_pop[AGE, ]
   # distribute proportionally to settlement — same habitat weighting as recruits
-  settlement_prop <- settlement / sum(settlement)         # length max_cell
+  settlement_prop <- settlement / sum(settlement) # length max_cell
   
   # outer product: each cell's proportion × each length-class abundance
-  current_pop[, , AGE] <- settlement_prop #total_this_age
-  }
+  current_pop[, , AGE] <- outer(settlement_prop, total_this_age)
+}
 
-cat("Total fish initialised:", sum(yearly_pop), "\n")
+cat("Total fish initialised:", sum(current_pop), "\n")
 cat("Age structure check:\n")
-print(round(colSums(yearly_pop[,1,])))
+print(round(colSums(current_pop[,,1])))
 
 
 ## start the burn-in ----------------------------------------------------------
@@ -118,9 +118,11 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
                                          max_cell = max_cell,
                                          max_age = max_age,
                                          max_year = max_year,
-                                         yearly_pop = yearly_pop,
+                                         n_lengths = n_lengths,
+                                         current_pop = current_pop,
                                          weight = weight,
                                          selectivity = selectivity,
+                                         age_transition = age_transition,
                                          natural_mortality = nat_mort,
                                          spawning_months = spawn_months,
                                          BHa = BHa,
@@ -134,14 +136,35 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
                                          fleet_info = fleet_info
   )
 
-  # we want to save a couple things: 
-  ## 1. the population at the end of the year (to give to the loop again as January population)
-  yearly_pop <- ModelOutput$yearly_pop #  cell x month x age
+  # save the population at the end of the month (to give to the loop again as January population)
+  current_pop <- ModelOutput$next_pop #  cell x length x age
   fishing_mortality <- ModelOutput$fishing_mortalities
-  ## 2. catch etc. which we will do later.
-  BURN_IN_pop[[YEAR+1]] <- ModelOutput$yearly_pop
-  #BURN_IN_catch_number[[YEAR+1]] <- rowSums(ModelOutput$catch_number_by_fleet, dims = 3)
-  #BURN_IN_catch_weight[[YEAR+1]] <- rowSums(ModelOutput$catch_weight_by_fleet, dims = 3)
+  
+  BURN_IN_pop[[YEAR+1]] <- current_pop # the format is (cell x length x age) x year
+  
+  # add a plot check, to avoid wasting time on running the function
+  total_by_length_age <- apply(current_pop, c(2, 3), sum)
+  age_structure       <- colSums(total_by_length_age)   # summed over lengths
+  size_structure      <- rowSums(total_by_length_age)   # summed over ages
+  
+  png(
+    filename = file.path("plots/checking_plots_during_setup/06_burn_in_plot_checks/", sprintf("burnin_year_%04d.png", YEAR + 1)),
+    width = 1200, height = 500, res = 120
+  )
+  
+  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+  
+  plot(age_structure,
+       type = "l", lwd = 2, col = "steelblue",
+       xlab = "Age class", ylab = "Total abundance",
+       main = paste0("Age structure — Year ", YEAR + 1))
+  
+  plot(size_structure,
+       type = "l", lwd = 2, col = "darkred",
+       xlab = "Length bin", ylab = "Total abundance",
+       main = paste0("Size structure — Year ", YEAR + 1))
+  
+  dev.off()
   
 }
 End = Sys.time()
@@ -156,8 +179,8 @@ Runtime
 # (fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa)
 f <- 1 - exp(-(fishing_mortality)) 
 
-age_to_plot <- 10
-age_f <- as.vector(f[, age_to_plot])
+age_to_plot <- 3
+age_f <- f[,, age_to_plot]
 water2 <- readRDS("data/output_data/02_watergrid.rds")
 water2$f <- age_f
 
@@ -166,21 +189,34 @@ mapview::mapview(water2[,c("geometry", "f")], zcol = "f")
 
 ### burn-in population stability over time ------------------------------------
 
-total_pop <- lapply(BURN_IN_pop, function(x) rowSums(x, dims = 2))
-tot_pop2 <- sapply(total_pop, function(x) sum(x[, 12]))
-plot(tot_pop2)
+total_pop <- lapply(BURN_IN_pop, function(pop) sum(pop))
 
+plot(1:max_year, total_pop, type = "l",
+     xlab = "Year", ylab = "Total abundance",
+     main = "Population during burn-in")
+BURN_IN_pop[[60]][1,1,1]
 
 ### age structure in the last time step ---------------------------------------
 
-plot(colSums(yearly_pop[,12,]))
+total_by_length_age <- apply(current_pop, c(2,3), sum)
 
+age_structure <- colSums(total_by_length_age)
+size_structure <- rowSums(total_by_length_age)
+
+par(mfrow = c(1,2))
+
+plot(age_structure, type = "l", xlab = "Age", ylab = "Total abundance",
+     main = "Age structure")
+
+plot(size_structure, type = "l", xlab = "Length bin", ylab = "Total abundance",
+     main = "Size structure")
 
 ### fish density --------------------------------------------------------------
 
-year_to_plot <- 1
+year_to_plot <- 59
+age_to_plot <- 10
 month_index <- 12
-monthly_fish_df <- as.data.frame(yearly_pop[,,year_to_plot])
+monthly_fish_df <- as.data.frame(BURN_IN_pop[[year_to_plot]][,,age_to_plot])
 
 colnames(monthly_fish_df) <- paste0("month_", 1:12)
 water <- readRDS("data/output_data/02_watergrid.rds")
