@@ -299,7 +299,7 @@ names(fishable_stack) <- paste0("year_", years)
 fishable_summary <- terra::extract(
   fishable_stack,
   vect(water),
-  fun = mean,
+  fun = min,
   na.rm = TRUE
 )
 
@@ -319,7 +319,7 @@ fishable_depth_cell_month_year <- array(
   dimnames = list(NULL))
 
 fishable_depth_cell_month_year[is.nan(fishable_depth_cell_month_year)] <- 1 # replace NaN with 1 (these are shore cells that have depth 0)
-
+fishable_depth_cell_month_year[is.na(fishable_depth_cell_month_year)] <- 0 # replace Na with 0
 
 ## sanity check station 
 test_year = 110
@@ -452,12 +452,11 @@ dim(fishable_area_sum)
 
 
 ## sanity check station 
-test_year = 120
+test_year = 100
 test <- catchability[, 1, test_year]
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
 
 
