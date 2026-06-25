@@ -8,7 +8,7 @@
 
 # -----------------------------------------------------------------------------
 
-# Status:  Several parameters need changing. otherwise ready for a dummy run.
+# Status: May 2026 update: trying to switch from age-based to length-based system
 
 # -----------------------------------------------------------------------------
 
@@ -37,7 +37,6 @@ colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 
 # from this, we can calculate (3.) our start population.
 # we need step 1. because the Beverton-Holt equation (which the C++ code runs) calculates density-dependent recruitment (limited by the carrying capacity)
-
 
 
 ## STEP 0: set up life history ------------------------------------------------
@@ -73,19 +72,29 @@ M <- 0.12 # yearly natural mortality, table 4.2 https://library.dpird.wa.gov.au/
 
 # Beverton-Holt Parameters
 h   <- 0.75 # table 7.4 p.68 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
-R0  <- 1 # Initial recruitment, not referenced, not changed from charlotte
+R0  <- 1 # Initial recruitment, hypothetical number. do not change.
 
-max_age <- 40 # , table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+max_age <- 40 # table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+max_length <- 1095 # in mm, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
 
 # age at Maturity
-M50 <- (6.7 + 5.5)/2 # female male average, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
-M95 <- (12.9 + 12.3)/2 # female male average, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+M50 <- (6.7 + 5.5)/2 # female male average, A50 in table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+M95 <- (12.9 + 12.3)/2 # female male average, A95 table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
 hyperallo <- (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+
+L50 <- 660 # females only available, L50 in table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+L95 <- 900 # females only available, L95 in table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+
+# fecundity parameters 
+fec_a <- 9.436*10^-5 # table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+fec_b <- 3.359 # table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
+# batch fecundity = a * length^b
 
 
 ### fishing parameters ----
 
 # selectivity - for now considered as the same for rec and commercial fishing, as even Wise et al. 2007 group them together, p.99. https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1206&context=fr_rr#page=94.59 
+# parameter of selectivity ogive
 A50 <- 3.701 # Table 6.3.8, v50 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
 A95 <-  5.290 # Table 6.3.8, v95 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
 
@@ -106,6 +115,7 @@ eq.init.fish <-  0.025 # NOT CHANGED FROM CHARLOTTE, dont know what that is
 life_hist <- as.data.frame(array(1, dim = c((max_age*12), 3))) %>%
   rename(age = "V1") %>% 
   rename(length = "V2") %>% 
+  
   rename(weight = "V3") %>% 
   glimpse()
 
@@ -116,6 +126,8 @@ life_hist <- data.frame(age = ages) %>%
          #length_vb = Linf * (1 - exp(-k * (age - t0))), #this is the old VB equation
          weight = WLa * (length^WLb) / 1000) # Divide by 1000 to get in kg 
 glimpse(life_hist)
+
+plot(x = life_hist$age, y = life_hist$length)
 
 
 ## STEP 1: set up a hypothetical unfished population --------------------------
