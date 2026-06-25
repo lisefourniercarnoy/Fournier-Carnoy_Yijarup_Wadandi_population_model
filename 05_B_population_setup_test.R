@@ -49,7 +49,6 @@ max_age <- 40 # table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?ar
 ### length parameters ----
 
 # Von Bertalanffy Parameters (from Table 2, lower west coast, both sexes combined, https://academic.oup.com/icesjms/article/74/1/180/2669555?login=false#186901916)
-# we're not using this anymore, see schnute below
 # Linf  <- 1136 # hypothetical asymptotic length at infinite age (mm)
 # k     <- 0.12 # growth coefficient, (/year)
 # t0    <- -0.42 # hypothetical age at length = 0 (y)
@@ -64,9 +63,8 @@ b <- (1.239 + 1.206)/2 # "incremental relative rate of relative growth rate", Sc
 
 max_length <- 1095 # in mm, table 4.2 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr#page=12.15
 
-# age-length standard deviation parameters, for equation 3 in Francis et al. 2016, https://www.sciencedirect.com/science/article/pii/S0165783615000909
-al_a <- 10 # manually selected to make biological sense.
-al_b <- 0.005 # manually selected to make biological sense.
+# age-length standard deviation parameters, for Pinkies, table 1 in Crisafulli et al. 2025 https://www.sciencedirect.com/science/article/pii/S0165783624003023#sec0140
+al_cv <- 0.066
 
 # length bin size we'll use in the model
 length_bin_size <- 50 # mm. i used 10mm previously but that makes the model too slow.
@@ -153,10 +151,22 @@ length_age_matrix <- matrix(0,
                             dimnames = list(as.numeric(mean_life_hist$age), 
                                             as.numeric(bin_mids)))
 
+schnute_length <- function(AGE, l1, l2, t1, t2, a, b) {
+  L <- (l1^b + (l2^b - l1^b) * (1 - exp(-a * (AGE - t1))) / (1 - exp(-a * (t2 - t1))))^(1 / b)
+  pmin(L, max_length)
+} # this function is to obtain the expected length at AGE years old 
+
 for (i in 1:nrow(length_age_matrix)) {
   
-  mean_length = round(mean_life_hist$length[i])
-  sd_length = al_a + al_b * mean_length # eq. 3 from Francis et al. 2016, https://www.sciencedirect.com/science/article/pii/S0165783615000909
+  biological_age <- i-1 # the model considers 1yo fish to be a full year old, even though they have just recruited. correct that
+  
+  if (biological_age == 0) {
+    mean_length <- 10  # minimum recruit size in mm (post-settlement juvenile)
+  } else {
+    mean_length <- round(schnute_length(biological_age, l1, l2, t1, t2, a, b))
+  }
+  
+  sd_length = al_cv * mean_length # eq. 3 from Francis et al. 2016, https://www.sciencedirect.com/science/article/pii/S0165783615000909
   
   length_age_matrix[i, ] <- dnorm(bin_mids, mean = mean_length, sd = sd_length)
 } # this loops calculates how likely it is that a fish of age x is of each length y
@@ -196,30 +206,20 @@ as.data.frame(length_age_matrix) %>%
 # age transition matrices are usually calculated with tag-recapture data. 
 # i don't have that data, so i'll simulate it.
 
+
 ### A. release the fish! ----
 
 set.seed(123)
 
-# get some functions sorted
-schnute_length <- function(AGE, l1, l2, t1, t2, a, b) {
-    L <- (l1^b + (l2^b - l1^b) * (1 - exp(-a * (AGE - t1))) / (1 - exp(-a * (t2 - t1))))^(1 / b)
-  pmin(L, max_length)
-} # this function is to obtain the expected length at AGE years old 
-
-sd_at_length <- function(mu_length, al_a, al_b) {
-  al_a + al_b * mu_length
-} # this is to add some variability, eq.3 in Francis 2016
-
 # some mean life history
 ages = seq(1, max_age, by = 1/12) # monthly ages.
-
-lengths = as.numeric(colnames(length_age_matrix))
+lengths = as.numeric(colnames(length_age_matrix)) # the midpoints of the length bins
 
 # catch, tag, and release some fish!
 n_fish  <- 100000
 
-tag_recap <- data.frame(
-  release_length = runif(n_fish, min = min(lengths_bins), max = max(lengths_bins))#sample(lengths_bins, size = n_fish, replace = TRUE)
+tag_recap <- data.frame( # random set of lengths between min and max
+  release_length = runif(n_fish, min = 10, max = max(lengths_bins)) # random lengths >10mm (min juvenile size)
 ) %>% 
   glimpse()
 
@@ -228,8 +228,8 @@ hist(tag_recap$release_length)
 
 ### B. pretend you know the age of these released fish ----
 
-mu_by_age <- schnute_length(ages-1, l1, l2, t1, t2, a, b) # this is the mean length for all ages that a fish can be (monthly) - age-1 because otherwise it treats the new recruits (1 year old in the model) as fish that should be 200mm, so growth of 200mm in 1month... not possible.
-sd_by_age <- sd_at_length(mu_by_age, al_a, al_b) # this is the variability around the mean length, for all ages that a fish can be
+mu_by_age <- schnute_length(ages-1, l1, l2, t1, t2, a, b) # vb_length(ages-1) # this is the mean length for all ages that a fish can be (monthly) - age-1 because otherwise it treats the new recruits (1 year old in the model) as fish that should be 200mm, so growth of 200mm in 1month... not possible.
+sd_by_age <- mu_by_age * al_cv # this is the variability around the mean length, for all ages that a fish can be.
 
 age_likelihoods <- function(LENGTH) {
   dnorm(LENGTH, mean = mu_by_age, sd = sd_by_age)
@@ -239,43 +239,40 @@ tag_recap$release_age <- sapply(tag_recap$release_length, function(LENGTH) {
   len_capped <- min(LENGTH, max(lengths_bins)) # prevent fish from being larger than the limit
   liks <- age_likelihoods(len_capped) # finds how likely each age is for that length
   liks <- liks / sum(liks) # normalise to get the relative likelihood of each age
-  sum(ages * liks) # get the weighted average age
+  #sum(ages * liks) # get the weighted average age
+  ages[which.max(liks)] 
+  
 }) # this obtains the age (as an average from the likely ages) for every fish we released
 
 head(tag_recap)
 
-plot(x = tag_recap$release_age, y = tag_recap$release_length)
+plot(x = tag_recap$release_age, y = tag_recap$release_length) # the largest fish are assigned to the oldest age class.
 
 
 ### C. one month later, catch the fish again! ----
 
-# one year later, we go back and capture the fish again
-tag_recap$recapture_age <- tag_recap$release_age -1 + (1/12) # they have all aged 1 month - age-1 because otherwise it treats the new recruits (1 year old in the model) as fish that should be 200mm, so growth of 200mm in 1month... not possible.
+# one month later, we go back and capture the fish again
+tag_recap$recapture_age <- tag_recap$release_age + (1/12)
 
-# their lengths follow Schnute again, based on their recapture age (with some variation)
-mu_recap <- schnute_length(tag_recap$recapture_age, l1, l2, t1, t2, a, b) 
-sd_recap <- sd_at_length(mu_recap, al_a, al_b)
+mu_release   <- vb_length(tag_recap$release_age - 1)
+mu_recap_age <- vb_length(tag_recap$recapture_age - 1)
+
+growth_increment <- pmax(mu_recap_age - mu_release, 0)
+sd_recap <- pmax(al_cv * growth_increment, 1) # minimum growth is 1mm per month
 
 # we have to randomly decide what length the fish will be one year after release, according to mu & sd,
 # keeping in mind that fish can't shrink.
 library(truncnorm)
 # so rtruncnorm will do "okay this fish was release at __mm, one year later its length will be randomly selected from a normal distribution that makes sense for its age (mu & sd), keeping in mind the min length (release length) and max length."
 tag_recap$recapture_length <- rtruncnorm(
-  n     = n_fish,
-  a     = tag_recap$release_length, # lower bound (no shrinkage)
-  b     = max(lengths_bins),# upper bound
-  mean  = mu_recap,
-  sd    = sd_recap
-) # boom shakalaka
-
-# for very big fish, the rtruncnorm can't calculate a growth (because it's very close to the max length) so just assign them the release length.
-tag_recap$recapture_length <- ifelse(is.na(tag_recap$recapture_length), tag_recap$release_length, tag_recap$recapture_length) 
+  n    = n_fish,
+  a    = tag_recap$release_length, # lower bound (no shrinkage)
+  b    = max(lengths_bins), # upper bound (largest size)
+  mean = tag_recap$release_length + growth_increment,
+  sd   = sd_recap
+)
 
 tag_recap$growth <- tag_recap$recapture_length - tag_recap$release_length
-
-head(tag_recap)
-summary(tag_recap)
-
 # cool beans, we now have a fully structured tag-recapture dummy dataset to base our age-transition matrix on.
 
 # check it over
@@ -299,7 +296,7 @@ tag_recap %>%
     )
   )) %>%
   ggplot(aes(x = growth, y = length_bin)) +
-  xlim(c(0, 150)) +
+  #xlim(c(0, 150)) +
   geom_density_ridges_gradient(scale = 2, rel_min_height = 0.01) +
   labs(x = "growth in 1 month (mm)", y = "release length (mm)") +
   theme_ridges()
@@ -322,7 +319,7 @@ tag_recap$recapture_bin <- cut(tag_recap$recapture_length,
 
 
 for (i in 1:n_bins) {
-  current_length_bin <- bin_mids[i] # bin midpoint
+  current_lower_edge <- bin_breaks[i]  # lower edge of bin i
   fish <- tag_recap[tag_recap$release_bin == i, ] # find all the fish that were released at this length bin.
   
   mu_recap <- mean(fish$recapture_length, na.rm = T) # find their average recapture length
@@ -331,15 +328,15 @@ for (i in 1:n_bins) {
   # for each bin i, what is the probability of being that length, given the recapture data (p(length bin) is p(bin upper bound) - p(bin lower bound))
   probs <- pnorm(bin_breaks[-1], mu_recap, sigma_recap) - pnorm(bin_breaks[-length(bin_breaks)], mu_recap, sigma_recap)
   
-  probs[bin_breaks[-length(bin_breaks)] < current_length_bin] <- 0  # no shrinkage, zero out smaller bins.
+  probs[bin_breaks[-length(bin_breaks)] < current_lower_edge] <- 0  # no shrinkage, zero out smaller bins.
   
   ATM[i,] <- probs / sum(probs) # scale so it all adds up to 1
 }
 
 # the last bin is NAN, so need to fix it manually. largest fish stay in their length bin
 ATM[nrow(ATM), ] <- 0
-ATM[nrow(ATM), nrow(ATM)] <- 0.5 # this is a weird situation. essentially in the function, a 40 year old fish is killed off no matter its length. however, a 20yo fish can be the max length, and stay there (since it can't shrink in size) for 20 years.
-# this accumulation is a problem. here we're hard-coding the largest sized fish, so that 50% of them disappear off the face of the model. this way the accumulation is less problematic. however, i might need to set this to zero if the accumulation remains.
+ATM[nrow(ATM), nrow(ATM)] <- 1 # this is a weird situation. essentially in the function, a 40 year old fish is killed off no matter its length. however, a 20yo fish can be the max length, and stay there (since it can't shrink in size) for 20 years.
+# this accumulation is a problem. here we're hard-coding the largest sized fish, so that they disappear off the face of the model. this way the accumulation is less problematic.
 
 tail(ATM) # and that's the age transition matrix!
 
@@ -388,6 +385,7 @@ plot(x = age_survival$age,
 
 
 # put it all together
+length_age_matrix[1,] <- 0 # fill babies 
 unfished_pop_ssb <- sweep(length_age_matrix, MARGIN = 2, length_mature_biomass$mature_biomass, FUN = "*")
 test <- sweep(unfished_pop_ssb, MARGIN = 1, age_survival$survival, FUN = "*")
 
@@ -487,9 +485,14 @@ for (r in 2:(max_age)){
 # okay so now we know that our starting population has ~2400 fish of age 1, but not all will be the same length. we'll use our age-length matrix to figure out how many there are of each length.
 age_length_starting_pop <- sweep(length_age_matrix, MARGIN = 1, age_starting_pop[, "n"], FUN = "*")
 dim(age_length_starting_pop)
-plot(age_length_starting_pop[, 15], type = "l") # how many fish of length __ are there, and what are their ages?
-plot(age_length_starting_pop[, 19], type = "l") # how many fish of length __ are there, and what are their ages?
-plot(age_length_starting_pop[, 20], type = "l") # how many fish of length __ are there, and what are their ages?
+
+bins_to_plot <- c(1:9)
+par(mfrow = c(3, 3))
+lapply(bins_to_plot, function(col) {
+  plot(age_length_starting_pop[, col], type = "l",
+       #ylim = c(0, 2000),
+       main = paste("Length bin", col, "(", bin_mids[col], "mm)"))
+})
 
 ## you can see as fish age, there's more and more uncertainty about their age. that's exactly what we want.
 ## these fish form our starting population for the model
