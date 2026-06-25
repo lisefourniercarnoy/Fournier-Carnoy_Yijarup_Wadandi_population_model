@@ -295,24 +295,30 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 swim_speed_adult <- 10
 a = -(1 / swim_speed_adult)
 
+# difference in habitat affinity from one cell to all others
+hab_aff_diff <- matrix(0,nrow = NCELL, ncol = NCELL)
+for (i in 1:NCELL) {
+  for (j in 1:NCELL) {
+    
+    from_aff <- hab_aff[i]
+    to_aff <- hab_aff[j]
+    
+    hab_aff_diff[i,j] <- to_aff - from_aff
+  }
+} # this loop calculates the difference in habitat affinity between cells.
 
 # from this we can determine the utility of each of the cells.
 # This is very sensitive to changes in the habitat values.
-class(pDist)
-adult_hab_attractivity <- hab_aff^2 + (a * pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
-glimpse(adult_hab_attractivity)
-dim(adult_hab_attractivity)
-max(adult_hab_attractivity)
-
+adult_hab_attractivity <- hab_aff_diff^2 + (a*pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
 water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km², add a constant
-# difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
-# logging accounts for this different relationship. otherwise large cells are wayyyy too attractive. (see )
 
+# difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
+# logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
 cell_area_km2 <- log(water$cell_area) 
 cell_utility <- exp(adult_hab_attractivity) * matrix(cell_area_km2, 
                                                      nrow = NCELL, 
@@ -396,22 +402,27 @@ do.call(grid.arrange, c(plot_list, ncol = 2, nrow = 3))
 ## Recruitment matrix ---------------------------------------------------------
 
 # we want the recruits to be in seagrass and spawning ground, and then move out from there 
-sg_list <- water$ID[water$spawning_status == TRUE]
 
-dispersal <- as.data.frame(seagrass) %>%
-  rename(perc_habitat = seagrass) %>%
-  mutate(ID = water$ID, # so that it lines up with the seagrass ID and also cockburn sound cells
-         perc_habitat = ifelse(is.na(perc_habitat), 0, perc_habitat),
-         spawning = ifelse(ID %in% sg_list, 1, 0)) # replace NAs with zeroes for now.
-dispersal$area_km2 <- as.vector(water$cell_area*0.000001) # convert cell_area to km2
+# setup the correct elements
+sg_list <- water$ID[water$spawning_status == TRUE]
+dispersal <- data.frame(
+  perc_habitat = seagrass,
+  ID = water$ID,
+  area_km2 = as.vector(water$cell_area*0.000001)
+  ) %>% 
+  mutate(
+  spawning = ifelse(ID %in% sg_list, 1, 0)
+)
 glimpse(dispersal)
 sum(is.na(dispersal$perc_habitat)) # no NAs, all good.
 
-# check that spawning ground is correct
 ggplot() +
   geom_sf(data = water, aes(fill = dispersal$spawning), col = NA)
+ggplot() +
+  geom_sf(data = water, aes(fill = dispersal$perc_habitat), col = NA)
 
 
+# okay now we choose
 recruitment <- array(0, dim = c(nrow(dispersal), 2))
 recruitment[ ,2] <- as.numeric(dispersal$ID) 
 
@@ -419,7 +430,8 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(dispersal)))
 cell_utility[,2] <- as.numeric(dispersal$ID) 
 
 for(cell in 1:nrow(recruitment)){
-  U <- exp(dispersal[cell, "perc_habitat"]) + 0.25 * exp(dispersal[cell, "spawning"]) * dispersal[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
+  U <- (exp(dispersal[cell, "perc_habitat"]) + exp(dispersal[cell, "spawning"]))# * dispersal[cell, "area_km2"]
+  #U <- (exp(dispersal[cell, "perc_habitat"]) + 0.25 * exp(dispersal[cell, "spawning"])) * dispersal[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
@@ -441,13 +453,25 @@ ggplot() +
   ggtitle("Recruitment Probability Map") +
   theme_minimal() # looks okay.
 
+## SG cells should have a probability 1.6x higher than the rest of the cells?
+coastal_depth <- max(water_recruitment$depth[water_recruitment$ID %in% sg_list]) # we'll consider this is 'coastal waters
+
+# we'll compare the recruitment probability in 'coastal waters' of non-spawning ground 
+non_sg_coastal_cells <- water_recruitment$ID[!water_recruitment$ID %in% sg_list & water_recruitment$depth <= coastal_depth]
+sum_non_sg_rec_prob <- sum(water_recruitment$recruitment_prob[water_recruitment$ID %in% non_sg_coastal_cells])
+
+# to the the recruitment probability of spawning ground cells
+
+sum_sg_rec_prob <- sum(water_recruitment$recruitment_prob[water_recruitment$ID %in% sg_list])
+
+
 recruitment <- as.vector(recruitment[,1])
 
 # technically cockburn cells should contribute to 1.6x the batch fecundity of metro offshore and southwest cells (https://researchportal.murdoch.edu.au/esploro/outputs/report/Snapper-connectivity-and-evaluation-of-juvenile/991005792873207891)
 # but recruitment probability is different from batch fecundity i think so skipping that for now.
 
 
-## Recruit movement -----------------------------------------------------------
+## Recruit movement - NOT MODDED FOR HAB_AFF_DIFF -----------------------------
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
