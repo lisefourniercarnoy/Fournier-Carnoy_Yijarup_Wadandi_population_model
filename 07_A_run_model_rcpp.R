@@ -4,11 +4,11 @@
 # Data:    Previously simulated dataframes
 # Task:    ?
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    May 2025
+# Date:    June 2026
 
 # -----------------------------------------------------------------------------
 
-# Status: Starting out... NOT ADAPTED VERY MUCH AT ALL
+# Status: THE BURN-IN NEEDS SOME WORK
 
 # -----------------------------------------------------------------------------
 
@@ -45,152 +45,231 @@ library(abind)
 
 ## Read in functions ----------------------------------------------------------
 
-sourceCpp("functions/C_Model_RcppArm_test.cpp")
-source("functions/X_Functions.R")
+sourceCpp("functions/age-length_functions/run_full_model_function.cpp", verbose = TRUE)
 
 ## Load files  ----------------------------------------------------------------
 
-movement_Speed = "fast_movement"
 colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
-
-#### LOAD FILES ####
-
-adult_movement    <- readRDS("data/output_data/03_adult_movement_10_swim_speed.rds") %>% glimpse()
-settlement        <- readRDS("data/output_data/03_recruitment.rds") %>% glimpse()
-selectivity_com   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
-selectivity_b_rec <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOW THEY ARE THE SAME BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
-selectivity_s_rec <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOW THEY ARE THE SAME BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
-maturity          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
-weight            <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
-
-water             <- readRDS("data/output_data/02_watergrid.rds") %>% st_make_valid() %>% glimpse(); plot(water)
-
-## make selectivity an array, as for burn-in
-selectivity_com <- selectivity_com[, , 44] # selecting the most recent selectivity-retention
-for(i in 1:6){
-  selectivity_com <- abind(selectivity_com, selectivity_com, along=3)
-}
-selectivity_b_rec <- selectivity_b_rec[, , 44] # selecting the most recent selectivity-retention
-for(i in 1:6){
-  selectivity_b_rec <- abind(selectivity_b_rec, selectivity_b_rec, along=3)
-}
-selectivity_s_rec <- selectivity_s_rec[, , 44] # selecting the most recent selectivity-retention
-for(i in 1:6){
-  selectivity_s_rec <- abind(selectivity_s_rec, selectivity_s_rec, along=3)
-}
+water <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
 
 
-# crop and mask the bathymetry raster to the water extent - takes a while, re-run if extent changes after 18/09/2025
-# bathy <- rast("data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif") %>% glimpse()
-# bathy <- project(bathy, st_crs(water)$wkt)
-# water_vect <- vect(water); bathy_cropped <- crop(bathy, water_vect)
-# bathy_wadandi  <- mask(bathy_cropped, water_vect)
-# saveRDS(bathy_wadandi, "data/output_data/07_wadandi_bathymetry.rds")
-bathy <- readRDS("data/output_data/07_wadandi_bathymetry.rds")
-ntz_list <- readRDS("data/output_data/02_no_take_list.rds")
+## Get model parameters -------------------------------------------------------
 
-## Setup scenario names -------------------------------------------------------
+n_yrs_modelled <- 2024-1900 # number of years to simulate
 
-# for each scenario, we need to get the right burn-in files
-burn_in_pop       <- readRDS(paste0("data/output_data/06_burn_in_population.rds")) %>% glimpse() # this is the same for all scenarios.
+max_cell    <- nrow(water) # Number of cells in the model
+max_age     <- 40 # The max age of the fish in the model, see script 05 for correct value
+n_lengths   <- length(readRDS("data/output_data/05_length_bins.rds"))
+max_year    <- n_yrs_modelled # Number of years the model should run for 
 
-#scenario <- "07_A_SC" # 07_A for the script we're in, and SC for the scenario we're testing
-#scenario <- "07_A_S00" # 07_A for the script we're in, and S00 for the scenario we're testing
-scenario <- "07_A_S01" # 07_A for the script we're in, and S01 for the scenario we're testing
+current_pop   <- readRDS("data/output_data/06_burn_in_population.rds") %>% glimpse()
+weight        <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
+selectivity   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME FOR ALL FLEETS BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
+nat_mort      = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
 
-scenario_root_file <- case_when(scenario == "07_A_SC" ~ "04",
-                                scenario == "07_A_S00" ~ "S00",
-                                scenario == "07_A_S01" ~ "S01"
+spawn_months <- c(10, 11, 12) # 1-indexed. the function deals with zero-indexing it.
+BHa           = as.double(readRDS("data/output_data/05_Beverton-Holt_alpha.rds")) # see script 05
+BHb           = as.double(readRDS("data/output_data/05_Beverton-Holt_beta.rds")) # see script 05
+PF            = 0.5 # proportion expected to be females
+hyperallo     = (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+mature         <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
+settlement     <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse() #; settlement <- settlement[, 1] # selecting a single column because the function expects a vector
+age_transition <- readRDS("data/output_data/05_age_transition_matrix.rds") %>% glimpse()
+adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+
+fleet_names <- c(
+  "commercial", 
+  "boat_rec", 
+  "shore_rec"
+)
+com_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds") %>% glimpse()
+com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+brec_info <- readRDS("data/output_data/04_C_boat_rec_fishing_info.rds") %>% glimpse()
+brec_info$fishing_days[brec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+srec_info <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds") %>% glimpse()
+srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
+
+# add scaling for each fleet, to account for different gears being less efficient, compared to commercial. see g-sheets Fishing effort reconstruction
+brec_info$fishing_days <- brec_info$fishing_days * 0.1
+srec_info$fishing_days <- srec_info$fishing_days * 0.017
+
+fleet_info = list(com_info, 
+                  brec_info,
+                  srec_info
 )
 
-if (scenario == "07_A_S01") {
-  effort_com <- array(0, dim = c(1063, 12, 80))
-} else {
-  effort_com <- readRDS(paste0(
-    "data/output_data/",
-    scenario_root_file,
-    if (scenario == "07_A_SC") "A",
-    "_commercial_burn_in_fishing.rds"
-  ))
+
+## start the simulation -------------------------------------------------------
+
+RECONS_pop <- list() # keep record of the burn-in outputs
+RECONS_catch_weight <- list()
+RECONS_catch_number <- list()
+RECONS_F   <- list()
+RECONS_SSB <- list()
+RECONS_catch_by_fleet <- list()
+
+
+Start = Sys.time()
+for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
+  
+  # loop over all the Rcpp functions in the model
+  ModelOutput <- run_full_model_function(YEAR = YEAR,
+                                         max_cell = max_cell,
+                                         max_age = max_age,
+                                         max_year = max_year,
+                                         n_lengths = n_lengths,
+                                         current_pop = current_pop,
+                                         weight = weight,
+                                         selectivity = selectivity,
+                                         age_transition = age_transition,
+                                         natural_mortality = nat_mort,
+                                         spawning_months = spawn_months,
+                                         BHa = BHa,
+                                         BHb = BHb,
+                                         PF = PF,
+                                         ha_scaling = hyperallo,
+                                         maturity = mature,
+                                         settlement = settlement,
+                                         adult_movement_prob = adult_movement,
+                                         fleet_names = fleet_names,
+                                         fleet_info = fleet_info
+  )
+  
+  # save the population at the end of the year (to give to the loop again as January population)
+  current_pop <- ModelOutput$next_pop #  cell x length x age
+  fishing_mortality <- ModelOutput$fishing_mortalities
+  
+  RECONS_pop[[YEAR+1]] <- current_pop # the format is (cell x length x age) x year
+  fishing_mortality  <- ModelOutput$fishing_mortalities
+  
+  RECONS_pop[[YEAR+1]] <- current_pop
+  RECONS_F[[YEAR+1]]   <- ModelOutput$annual_F          # cell x length
+  RECONS_SSB[[YEAR+1]] <- ModelOutput$spawning_biomass  # cell, summed across spawning months
+  fleet_catch_this_year <- sapply(1:length(fleet_names), function(f) {
+    sum(ModelOutput$catch_weight_by_fleet[[f]])  # sum over all cells and ages
+  })
+  RECONS_catch_by_fleet[[YEAR+1]] <- fleet_catch_this_year
+  
+  # add a plot check, to avoid wasting time on running the function
+  total_by_length_age <- apply(current_pop, c(2, 3), sum)
+  age_structure       <- colSums(total_by_length_age)   # summed over lengths
+  size_structure      <- rowSums(total_by_length_age)   # summed over ages
+  
+  png(
+    filename = file.path("plots/checking_plots_during_setup/07_A_recons_plot_checks/", sprintf("recons_year_%04d.png", YEAR + 1)),
+    width = 1200, height = 500, res = 120
+  )
+  
+  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+  
+  plot(age_structure,
+       type = "l", lwd = 2, col = colour_palette[6],
+       xlab = "Age class", ylab = "Total abundance",
+       main = paste0("Age structure — Year ", YEAR + 1))
+  
+  plot(size_structure,
+       type = "l", lwd = 2, col = colour_palette[4],
+       xlab = "Length bin", ylab = "Total abundance",
+       main = paste0("Size structure — Year ", YEAR + 1))
+  
+  dev.off()
+  
 }
-effort_s_rec      <- readRDS(paste0("data/output_data/", scenario_root_file, if(scenario == "07_A_SC") {"B"}, "_shore_rec_burn_in_fishing.rds")) %>% glimpse()
-if (scenario == "07_A_S01") {
-  effort_b_rec <- array(0, dim = c(1063, 12, 80))
-} else {
-  effort_b_rec <- readRDS(paste0(
-    "data/output_data/",
-    scenario_root_file,
-    if (scenario == "07_A_SC") "C",
-    "_boat_rec_burn_in_fishing.rds"
-  ))
-}
+
+End = Sys.time()
+Runtime = End - Start
+Runtime
+
+### simulated population stability over time ----------------------------------
 
 
+## a few sanity checks --------------------------------------------------------
 
-## Crop water ??? -------------------------------------------------------------
-#  FOR SOME REASON SOME NEARSHORE CELLS ARE NOT INCLUDED. NEEDS FIXING SOMEHOW.
-# We'll select the cells that are in <30m water (this will allow us to plot catch in different depths??)
+### burn-in population stability over time ------------------------------------
 
-# only done once, valid for all simulations
-
-# plot(bathy)
-# plot(water$geometry, add = T)
-# 
-# water_points <- st_centroid_within_poly(water); plot(water_points) # make centroids
-# water_bathy <- raster::extract(bathy, water_points, fun = mean, df = TRUE); plot(water_bathy) # get the depth at the centroid location
-# water_bathy <- water_bathy %>% mutate(ID = as.factor(ID))
-# model_WHA <- water %>% st_intersects(., water) %>% as.data.frame()
-# water_WHA <- water[c(as.numeric(model_WHA$row.id)), ]
-# 
-# water_shallow <- water_WHA %>%
-#   mutate(ID = as.factor(ID)) %>%
-#   left_join(., water_bathy, by="ID") %>%
-#   rename(bathy = "AusBathyTopo__Australia__2024_250m_MSL_cog") %>%
-#   filter(bathy >= c(-30)) %>% 
-#   filter(!is.na(bathy))
-# summary(is.na(water_shallow$bathy))
-# plot(water_shallow$geometry)
-# 
-# shallow_cells_ntz <- water_shallow %>%
-#   filter(ID %in% ntz_list[[1]]) %>%
-#   distinct(ID, .keep_all = TRUE)
-# 
-# shallow_cells_fished <- water_shallow %>%
-#   filter(!ID %in% ntz_list[[1]]) %>%
-#   distinct(ID, .keep_all = TRUE)
-# 
-# plot(shallow_cells_fished$geometry, col = colour_palette[4]) # check that they make sense
-# plot(shallow_cells_ntz$geometry, col = colour_palette[6], add = T)
-# 
-# shallow_ntz_id <- as.numeric(levels(shallow_cells_ntz$ID))[as.integer(shallow_cells_ntz$ID)]
-# shallow_fished_id <- as.numeric(levels(shallow_cells_fished$ID))[as.integer(shallow_cells_fished$ID)]
-# 
-# saveRDS(shallow_ntz_id, "data/output_data/07A_shallow_ntz_cell_id.rds")
-# saveRDS(shallow_fished_id, "data/output_data/07A_shallow_fished_cell_id.rds")
-
-shallow_ntz_id <- readRDS("data/output_data/07A_shallow_ntz_cell_id.rds")
-shallow_fished_id <- readRDS("data/output_data/07A_shallow_fished_cell_id.rds")
-
-## Set model parameters -------------------------------------------------------
-
-# Natural Mortality
-nat_mort <- 0.12 # table 9, p.95 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1206&context=fr_rr
-hyperallo <- 1.24 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+total_pop <- lapply(RECONS_pop, function(pop) sum(pop))
+par(mfrow = c(1,1))
+plot(1:max_year, total_pop, type = "l",
+     xlab = "Year", ylab = "Total abundance",
+     main = "total Population during reconstruction")
+# we are looking for a population that ends up being somewhat stable in the last few years of the burn in, with no huge dips of spikes.
 
 
-# Beverton-Holt Recruitment Values - Have sourced the script but need to check that alpha and beta are there
-BHa = 0.4344209 # NOT CHANGED FROM CHARLOTTE, NEED TO FIND SOMEWHERE
-BHb = 0.0002349538 # NOT CHANGED FROM CHARLOTTE, NEED TO FIND SOMEWHERE
-PF = 0.5 # proportion expected to be females
+### finite f ------------------------------------------------------------------
 
-# Model settings
-max_cell    <- nrow(water) # Number of cells in the model
-max_age     <- 30 # the max age of the fish in the model (-1 to account for the fact that Rcpp functions start from 0)
-max_year    <- 49-1 # number of years the model should run for (1945 + number of burn-in years = 1975, 2024-1975 = 49 years of non-burn-in simulation, -1 to account for the fact that Rcpp functions start from 0)
-#plot_total  <- T # T if you want a line plot of the total or F for the map,
+# finite fishing mortality (f) is the % of fish removed from the population over any time period.
+F_by_length_year <- sapply(RECONS_F, function(f) colMeans(f))  # n_lengths x n_years
+matplot(t(F_by_length_year), type = "l", lty = 1,
+        xlab = "Year", ylab = "Mean F (across cells)",
+        main = "Fishing mortality by length bin over time",
+        col = colorRampPalette(c(colour_palette[3], colour_palette[6]))(nrow(F_by_length_year)))
 
-pop_groups  <- seq(1, 12)
+legend("topright", legend = c("small fish", "large fish"), 
+       col = c(colour_palette[3], colour_palette[6]), lty = 1, title = "Length bin")
+# fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa
 
+
+### age and length structure in the last time step ----------------------------
+
+total_by_length_age <- apply(current_pop, c(2,3), sum)
+
+age_structure <- colSums(total_by_length_age)
+size_structure <- rowSums(total_by_length_age)
+
+par(mfrow = c(1, 2))
+plot(age_structure, type = "l", xlab = "Age", ylab = "Total abundance",
+     main = "Age structure")
+plot(size_structure, type = "l", xlab = "Length bin", ylab = "Total abundance",
+     main = "Size structure")
+
+
+### spawning biomass ----------------------------------------------------------
+
+SSB_timeseries <- sapply(RECONS_SSB, sum)  # sum over cells, one value per year
+par(mfrow = c(1, 1))
+plot(SSB_timeseries, type = "l", lwd = 2, col = colour_palette[6],
+     xlab = "Year", ylab = "Total SSB",
+     main = "Effective reproductive output")
+
+
+### fish density --------------------------------------------------------------
+
+water <- readRDS("data/output_data/02_watergrid.rds")
+
+ages_to_plot <- c(1, 5, 10, 20, 30, 40)
+age_df <- lapply(ages_to_plot, function(a) {
+  cell_totals <- apply(RECONS_pop[[60]][,, a], 1, sum)
+  water$fish <- cell_totals
+  water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
+  water
+}) %>% bind_rows()
+
+ggplot(age_df) +
+  geom_sf(aes(fill = fish), color = NA) +
+  scale_fill_viridis_c(name = "Fish") +
+  facet_wrap(~ age, nrow = 1) +
+  theme_void() +
+  ggtitle("Fish distribution by age (year 60)")
+
+
+### relative catch of fleets --------------------------------------------------
+
+catch_df <- do.call(rbind, lapply(seq_along(RECONS_catch_by_fleet), function(yr) {
+  data.frame(
+    year  = 1900 + yr,
+    fleet = fleet_names,
+    catch_kg = RECONS_catch_by_fleet[[yr]]
+  )
+}))
+
+ggplot(catch_df, aes(x = year, y = catch_kg, colour = fleet)) +
+  geom_line(lwd = 1) +
+  labs(x = "Year", y = "Catch (kg)", title = "Annual catch by fleet") +
+  theme_bw()
+
+## ### BELOW IS ARCHIVE BUT KEEPING IN CASE THE STRUCTURE IS DIFFERNET FROM BURN IN ####
 ## Set up initial population --------------------------------------------------
 
 # We need to create loads of objects to save different elements of the model output:
@@ -214,14 +293,6 @@ sim_ages  <- array(0, dim = c(max_age, max_year, sim_n))
 sp_pop_f <- array(0, dim = c(length(shallow_fished_id), max_age, max_year))
 sp_pop_ntz <- array(0, dim = c(length(shallow_ntz_id), max_age, max_year))
 
-# lists to hold data for plots
-SIM_sp_f <- list()
-SIM_sp_ntz <- list()
-SIM_n_dist <- list()
-SIM_n_catches <- list()
-SIM_age_catches <- list()
-SIM_weight_catches <- list()
-
 
 ## Run model simulations ------------------------------------------------------
 
@@ -234,7 +305,7 @@ for (SIM in 1:sim_n){ # Simulation loop - CHARLOTTE HAD 100, I'M STARTING WITH 1
   
   print(paste0("Simulation number ", SIM)) # progress update
   
-  yearly_total <- readRDS("data/output_data/06_burn_in_population.rds")
+  yearly_total <- readRDS("data/output_data/06_RECONS__population.rds")
   
   for (YEAR in 14:(max_year-1)){ # Start of model year loop.
     
