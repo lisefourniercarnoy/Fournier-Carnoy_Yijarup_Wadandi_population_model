@@ -26,11 +26,9 @@ Rcpp::List recruitment_function(
   // Standard BH on the hyperallometry-adjusted spawning output
   double tot_recs_before_var = total_female_SB / (BHa + BHb * total_female_SB);
   
-  // we want to add variability in the recruitment. we want the average recruitment to be what the Beverton-Holt equation predicts (variability averaging 1), but some years above, some years below.
-  // we exponentiate to make some years *really good* and some years *really bad* for recruitment. exponentiating makes the normal distribution asymmetrical though! exp(1) = 2.72, but exp(-1) = 0.37 (== the average is greater than 1)
-  // therefore we do some math to make sure the variability is exponential, but always averaging 1: exp(variability - (sigma^2 / 2))
-  double sigma = 0.5; 
-  double tot_recs_after_var = tot_recs_before_var * exp(R::rnorm(0, sigma) - ((sigma*sigma)/2)); // add some recruitment variability
+  // we want to add variability in the recruitment. see equation 1 in Methot & Taylor 2011
+  double sigma = 0.6; 
+  double tot_recs_after_var = tot_recs_before_var * exp(R::rnorm(0, sigma) - ((sigma*sigma)/2)); // centered on zero. 
   
   arma::vec settle_recs = settlement * tot_recs_after_var;
 
