@@ -296,10 +296,9 @@ fishable_stack <- rast(
 
 names(fishable_stack) <- paste0("year_", years)
 
-fishable_summary <- terra::extract(
+fishable_summary <- terra::extract( # this extracts the fishability (TRUE or FALSE) at cell centroids
   fishable_stack,
-  vect(water),
-  fun = min,
+  centroids,
   na.rm = TRUE
 )
 
@@ -318,8 +317,7 @@ fishable_depth_cell_month_year <- array(
   dim = c(NCELL, 12, 125),
   dimnames = list(NULL))
 
-fishable_depth_cell_month_year[is.nan(fishable_depth_cell_month_year)] <- 1 # replace NaN with 1 (these are shore cells that have depth 0)
-fishable_depth_cell_month_year[is.na(fishable_depth_cell_month_year)] <- 0 # replace Na with 0
+fishable_depth_cell_month_year[is.na(fishable_depth_cell_month_year)] <- FALSE # replace Na with 0
 
 ## sanity check station 
 test_year = 110
