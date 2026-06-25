@@ -309,7 +309,7 @@ for (i in 1:NCELL) {
 
 # from this we can determine the utility of each of the cells.
 # This is very sensitive to changes in the habitat values.
-adult_hab_attractivity <- hab_aff_diff^2 + (a*pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
+adult_hab_attractivity <- hab_aff_diff + (a*pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
@@ -339,7 +339,7 @@ ggplot() +
   theme_void()
 
 water_2 <- water
-water_2$test <- cell_utility[100,]
+water_2$test <- cell_utility[1000,]
 summary(water_2$test)
 ggplot() +
   geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
