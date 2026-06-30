@@ -136,7 +136,7 @@ mean_life_hist <- data.frame(
 
 # from this, let's add uncertainty (because not every 1yo fish will be the same length)
 # we'll make a age x length matrix that tells us how likely it is that a fish of age x is of length a, b, c, etc.
-lengths <- (0:(max_length + 100)) # start at zero, but all lengths should start at 10mm (see here for post settlement juvenile size ref https://rsnz.onlinelibrary.wiley.com/doi/10.1080/00288330.2014.892013)(+ a little bit to encompass extra big fish just in case)
+lengths <- (0:(max_length)) # start at zero, but all lengths should start at 10mm (see here for post settlement juvenile size ref https://rsnz.onlinelibrary.wiley.com/doi/10.1080/00288330.2014.892013)
 
 # define your length bins (e.g. 50mm bins)
 bin_breaks <- seq(0, max_length+100, by = length_bin_size) # +100 for extra big fish
@@ -228,7 +228,7 @@ hist(tag_recap$release_length)
 
 ### B. pretend you know the age of these released fish ----
 
-mu_by_age <- schnute_length(ages-1, l1, l2, t1, t2, a, b) # vb_length(ages-1) # this is the mean length for all ages that a fish can be (monthly) - age-1 because otherwise it treats the new recruits (1 year old in the model) as fish that should be 200mm, so growth of 200mm in 1month... not possible.
+mu_by_age <- schnute_length(ages-1, l1, l2, t1, t2, a, b) # this is the mean length for all ages that a fish can be (monthly) - age-1 because otherwise it treats the new recruits (1 year old in the model) as fish that should be 200mm, so growth of 200mm in 1month... not possible.
 sd_by_age <- mu_by_age * al_cv # this is the variability around the mean length, for all ages that a fish can be.
 
 age_likelihoods <- function(LENGTH) {
@@ -254,8 +254,8 @@ plot(x = tag_recap$release_age, y = tag_recap$release_length) # the largest fish
 # one month later, we go back and capture the fish again
 tag_recap$recapture_age <- tag_recap$release_age + (1/12)
 
-mu_release   <- vb_length(tag_recap$release_age - 1)
-mu_recap_age <- vb_length(tag_recap$recapture_age - 1)
+mu_release   <- schnute_length(tag_recap$release_age - 1, l1, l2, t1, t2, a, b)
+mu_recap_age <- schnute_length(tag_recap$recapture_age - 1, l1, l2, t1, t2, a, b)
 
 growth_increment <- pmax(mu_recap_age - mu_release, 0)
 sd_recap <- pmax(al_cv * growth_increment, 1) # minimum growth is 1mm per month
