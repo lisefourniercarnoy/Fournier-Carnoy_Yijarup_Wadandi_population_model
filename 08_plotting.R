@@ -36,30 +36,81 @@ library(sf)
 # library(abind)
 # library(scales)
 
-## Load functions -------------------------------------------------------------
-source("XX_functions.R")
 
 ## Load files -----------------------------------------------------------------
 
-bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -33.2), crs = 4326) %>% st_as_sfc()
+library(sf)
+library(ggplot2)
+library(dplyr)
+colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 
-maturity          <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
-weight            <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
+common_crs <- 4326
 
-water             <- readRDS("data/output_data/02_watergrid.rds") %>% st_make_valid() %>% glimpse(); plot(water)
-no_take_list      <- readRDS("data/output_data/02_no_take_list.rds") %>% glimpse()
-ntz               <- st_read("data/output_data/01_wadandi_NTZ.shp") %>% glimpse(); plot(ntz)
-BR                <- st_read("data/input_data/wadandi_boat_ramps.shp") %>% glimpse(); plot(BR$geometry)
-network           <- st_read("data/output_data/03_network_shapefile.shp") %>% glimpse(); plot(network$geometry)
-wa_map            <- st_read("data/output_data/01_wadandi_land.shp") %>% glimpse(); plot(wa_map)
+bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -31),
+                crs = common_crs) %>%
+  st_as_sfc()
 
-tot_pop_list <- list(readRDS("simulations/dummy_run/age_distribution_try1.rds"), readRDS("simulations/dummy_run/age_distribution_try1.rds"))
-total_pop <- total.pop.format(pop.file.list = tot_pop_list, 
-                              scenario.names = c("first try", "dummy"), 
-                              nsim = 2, 
-                              nyears = 44, 
-                              startyear = 15, 
-                              maxage = 30, 
-                              mat = maturity, 
-                              kg = Weight)
+# read + fix + reproject water grid
+water <- readRDS("data/output_data/02_watergrid.rds") %>%
+  st_make_valid() %>%
+  st_transform(common_crs)
+
+# read + fix + reproject land layer
+wa_map <- st_read("data/output_data/01_B_land.shp") %>%
+  st_make_valid() %>%
+  st_transform(common_crs)
+
+# confirm they now match
+st_crs(water) == st_crs(wa_map)  # should be TRUE
+
+# crop both to your bbox (st_crop is much faster than st_intersection
+# for a simple rectangular clip — it doesn't compute new boundary
+# geometry along cut edges, it just discards what's outside)
+water_crop  <- st_crop(water, bbox)
+wa_map_crop <- st_crop(wa_map, bbox)
+
+ggplot() +
+  geom_sf(data = wa_map_crop, 
+          aes(fill = "Land"), color = NA) +
+
+  # zones
+  geom_sf(data = water_crop[!is.na(water_crop$zone), ],
+          aes(fill = "No-Take Zone"), color = NA, alpha = 0.75) +
+  
+  # temporal closure
+  geom_sf(data = water_crop[water_crop$TC_status == TRUE, ],
+          aes(fill = "Temporal closure"), col = NA, alpha = 0.75) +
+
+  # base grid
+  geom_sf(data = water_crop,
+          aes(color = "Grid cells"), fill = NA) +
+  
+  # spawning
+  geom_sf(data = water_crop[water_crop$spawning_status == TRUE, ],
+          aes(col = "Spawning cells"), fill = NA, alpha = 0.75) +
+  
+  # legend
+  scale_fill_manual(
+    name = NULL,
+    values = c("No-Take Zone" = colour_palette[5], 
+               "Land" = colour_palette[3],
+               "Temporal closure" = colour_palette[6]
+               )
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Grid cells" = colour_palette[5],
+               "Spawning cells" = colour_palette[4]
+               )
+  ) +
+  
+  # themes
+  theme_minimal() +
+  theme(axis.text = element_blank()) +
+  labs(x = NULL, y = NULL)
+
+
+"#08415C" "#3E6990" "#F9EBE0" "#F18805" "#A3320B" "#6B0504"
+
+
 
