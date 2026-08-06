@@ -213,12 +213,9 @@ plot(SC_only$geometry, col = "red")
 plot(fished$geometry, col = "gray", add = T)
 plot(TC_SC_overlap$geometry, col = "blue", add = T)
 
-
 names(SC_only)
 names(TC_SC_overlap)
 names(fished)
-
-
 
 water <- bind_rows(
   SC_only,
@@ -307,9 +304,11 @@ mapview::mapview(water[!is.list(water)], alpha = 0.1)
 ## Save files for next step ---------------------------------------------------
 
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
-water %>%
+test <- water %>%
+  mutate(cell_area = round(cell_area, digits = 0)) %>% 
   dplyr::select(-TC_restriction_date, -TC_restriction_months, 
-                -TC_restriction_perc_fished, -SC_restriction_date) %>%
-  st_write("data/output_data/02_watergrid.shp", append = F)
+                -TC_restriction_perc_fished, -SC_restriction_date)
+
+saveRDS(test, "data/output_data/02_watergrid.shp")
 
 ### END ###
