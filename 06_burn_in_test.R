@@ -8,7 +8,7 @@
 
 # -----------------------------------------------------------------------------
 
-# Status: Doing checks here and there but it's functioning. might need to play with the initial recruitment a bit
+# Status:
 
 # -----------------------------------------------------------------------------
 
@@ -59,8 +59,8 @@ adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rd
 fleet_names <- c(
   "commercial", 
   "boat_rec", 
-  "shore_rec"
-                 )
+  "shore_rec")
+
 com_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds") %>% glimpse()
 com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
 
@@ -71,14 +71,29 @@ srec_info <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds") %>% gli
 srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
 
 
-# for the burn-in, we'll use a constant low level of fishing, so replace all years with 1900 fishing effort
+# for the burn-in, we'll use a constant low level of fishing, so replace all years with 1900 fishing effort, catchability, etc.
 com_info$fishing_days[,,1:dim(com_info$fishing_days)[[3]]] <- com_info$fishing_days[,,1]
 brec_info$fishing_days[,,1:dim(brec_info$fishing_days)[[3]]] <- brec_info$fishing_days[,,1]
 srec_info$fishing_days[,,1:dim(srec_info$fishing_days)[[3]]] <- srec_info$fishing_days[,,1]
 
-# add scaling for each fleet, to account for different gears being less efficient, compared to commercial. see g-sheets Fishing effort reconstruction
-brec_info$fishing_days <- brec_info$fishing_days * 0.1
-srec_info$fishing_days <- srec_info$fishing_days * 0.017
+com_info$catchability[,,1:dim(com_info$catchability)[[3]]] <- com_info$catchability[,,1]
+brec_info$catchability[,,1:dim(brec_info$catchability)[[3]]] <- brec_info$catchability[,,1]
+srec_info$catchability[,,1:dim(srec_info$catchability)[[3]]] <- srec_info$catchability[,,1]
+
+first_vals <- com_info$attractivity[[1]][, , 1]  # 1585 x 16 matrix (month 1, year 1)
+com_info$attractivity <- lapply(com_info$attractivity, function(x) {
+  array(first_vals, dim = dim(x))
+})
+
+first_vals <- brec_info$attractivity[[1]][, , 1]  # 1585 x 16 matrix (month 1, year 1)
+brec_info$attractivity <- lapply(brec_info$attractivity, function(x) {
+  array(first_vals, dim = dim(x))
+})
+
+first_vals <- srec_info$attractivity[[1]][, , 1]  # 1585 x 16 matrix (month 1, year 1)
+srec_info$attractivity <- lapply(srec_info$attractivity, function(x) {
+  array(first_vals, dim = dim(x))
+})
 
 fleet_info = list(com_info, 
                   brec_info,
@@ -90,13 +105,12 @@ fleet_info = list(com_info,
 
 total <- array(0, dim = c(max_year, 1))
 
-current_pop <- array(0, dim = c(max_cell, n_lengths, max_age)) # for every cell (row), and every month (column) across all fish ages (matrix slice), we will have a population
+current_pop <- array(0, dim = c(max_cell, n_lengths, max_age)) # for every cell (row), and every length (column) across all fish ages (matrix slice), we will have a population
 
 BURN_IN_pop <- list() # keep record of the burn-in outputs
-BURN_IN_catch_weight <- list()
-BURN_IN_catch_number <- list()
-BURN_IN_F   <- list()
 BURN_IN_SSB <- list()
+BURN_IN_catch_weight <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); names(BURN_IN_catch_weight) <- fleet_names
+BURN_IN_effort <- list() # cell x month x fleet, one array per year
 
 for(AGE in 1:max_age){
   total_this_age <- starting_pop[AGE, ]
@@ -108,11 +122,9 @@ for(AGE in 1:max_age){
 }
 
 cat("Total fish initialised:", sum(current_pop), "\n")
-cat("Age structure check:\n")
-print(round(colSums(current_pop[,,1])))
 
 
-## start the burn-in ----------------------------------------------------------
+## Start the burn-in ----------------------------------------------------------
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
@@ -142,20 +154,12 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
 
   # save the population at the end of the year (to give to the loop again as January population)
   current_pop <- ModelOutput$next_pop #  cell x length x age
-  fishing_mortality <- ModelOutput$fishing_mortalities
-  
-  BURN_IN_pop[[YEAR+1]] <- current_pop # the format is (cell x length x age) x year
-  fishing_mortality  <- ModelOutput$fishing_mortalities
-  
-  BURN_IN_pop[[YEAR+1]] <- current_pop
-  BURN_IN_F[[YEAR+1]]   <- ModelOutput$annual_F          # cell x length
-  BURN_IN_SSB[[YEAR+1]] <- ModelOutput$spawning_biomass  # cell, summed across spawning months
-  
-  # then for a quick annual check you can print
-  cat("Year", YEAR+1, 
-      "| Total SSB:", sum(BURN_IN_SSB[[YEAR+1]]),
-      "| Mean F (fished lengths):", mean(BURN_IN_F[[YEAR+1]]),
-      "\n")
+
+  # fill objects to check after the burn-in
+  BURN_IN_pop[[YEAR+1]]         <- current_pop # the format is (cell x length x age) x year
+  BURN_IN_SSB[[YEAR+1]]         <- ModelOutput$spawning_biomass  # cell, summed across spawning months
+  BURN_IN_catch_weight[YEAR+1,] <- sapply(ModelOutput$catch_weight_by_fleet, sum)
+  BURN_IN_effort[[YEAR+1]] <- ModelOutput$effort_by_fleet # array: cell x month x fleet
   
   # add a plot check, to avoid wasting time on running the function
   total_by_length_age <- apply(current_pop, c(2, 3), sum)
@@ -183,46 +187,24 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
   
 }
 
-End = Sys.time()
-Runtime = End - Start
-Runtime
+End = Sys.time(); Runtime = End - Start; Runtime
+# after the burn-in, make sure you run the sections below, where some outputs are saved for the historical reconstruction.
 
-## save the burn-in population ------------------------------------------------
-
-saveRDS(current_pop, file = "data/output_data/06_burn_in_population.rds")
-SSB0 <- mean(SSB_timeseries[(max_year-10):max_year])  # mean of last 10 burn-in years
-
-
-## a few sanity checks --------------------------------------------------------
-
-### burn-in population stability over time ------------------------------------
+### CHECK: burn-in population stability over time -----------------------------
 
 total_pop <- lapply(BURN_IN_pop, function(pop) sum(pop))
 par(mfrow = c(1,1))
 plot(1:max_year, total_pop, type = "l",
      xlab = "Year", ylab = "Total abundance",
      main = "total Population during burn-in")
-# we are looking for a population that ends up being somewhat stable in the last few years of the burn in, with no huge dips of spikes.
+# we are looking for a population that ends up being somewhat stable in the last few years of the burn in, with no huge dips nor spikes.
+
+saveRDS(current_pop, file = "data/output_data/06_burn_in_population.rds")
 
 
-### finite f ------------------------------------------------------------------
-
-# finite fishing mortality (f) is the % of fish removed from the population over any time period.
-F_by_length_year <- sapply(BURN_IN_F, function(f) colMeans(f))  # n_lengths x n_years
-matplot(t(F_by_length_year), type = "l", lty = 1,
-        xlab = "Year", ylab = "Mean F (across cells)",
-        main = "Fishing mortality by length bin over time",
-        col = colorRampPalette(c(colour_palette[3], colour_palette[6]))(nrow(F_by_length_year)))
-
-legend("topright", legend = c("small fish", "large fish"), 
-       col = c(colour_palette[3], colour_palette[6]), lty = 1, title = "Length bin")
-# fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa
-
-
-### age and length structure in the last time step ----------------------------
+### CHECK: age and length structure in the last time step ---------------------
 
 total_by_length_age <- apply(current_pop, c(2,3), sum)
-
 age_structure <- colSums(total_by_length_age)
 size_structure <- rowSums(total_by_length_age)
 
@@ -231,18 +213,25 @@ plot(age_structure, type = "l", xlab = "Age", ylab = "Total abundance",
      main = "Age structure")
 plot(size_structure, type = "l", xlab = "Length bin", ylab = "Total abundance",
      main = "Size structure")
+# we're looking for a nice inverse-exponential age structure.
+# length structure has many small fish, many large fish (these are 20-40yo fish that have accumulated in the max length for many years)
 
 
-### spawning biomass ----------------------------------------------------------
+### CHECK: spawning biomass ---------------------------------------------------
 
 SSB_timeseries <- sapply(BURN_IN_SSB, sum)  # sum over cells, one value per year
 par(mfrow = c(1, 1))
 plot(SSB_timeseries, type = "l", lwd = 2, col = colour_palette[6],
      xlab = "Year", ylab = "Total SSB",
      main = "Spawning Stock Biomass over time")
+# as with total population, the SSB should plateau.
+
+# we'll also export the final year's SSB to compare the historical reconstruction period's SSB to:
+SSB0 <- SSB_timeseries[length(SSB_timeseries)]
+saveRDS(SSB0, file = "data/output_data/06_burn_in_SSB0.rds")
 
 
-### fish density --------------------------------------------------------------
+### CHECK: fish density -------------------------------------------------------
 
 water <- readRDS("data/output_data/02_watergrid.rds")
 
@@ -252,7 +241,8 @@ age_df <- lapply(ages_to_plot, function(a) {
   water$fish <- cell_totals
   water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
   water
-}) %>% bind_rows()
+}) %>% 
+  bind_rows()
 
 ggplot(age_df) +
   geom_sf(aes(fill = fish), color = NA) +
@@ -260,29 +250,49 @@ ggplot(age_df) +
   facet_wrap(~ age, nrow = 1) +
   theme_void() +
   ggtitle("Fish distribution by age (year 60)")
+# here we're checking whether the spatial distribution of fish is reasonable, whether movement makes sense, and whether the number of fish per cell is also realistic. 
+
+### CHECK: effort distribution ------------------------------------------------
+
+water <- readRDS("data/output_data/02_watergrid.rds")
+
+water_effort <- water %>%
+  mutate(
+    commercial = BURN_IN_effort[[60]][, 12, 1],
+    boat_rec   = BURN_IN_effort[[60]][, 12, 2],
+    shore_rec  = BURN_IN_effort[[60]][, 12, 3]
+  ) %>%
+  pivot_longer(
+    cols = c(commercial, boat_rec, shore_rec),
+    names_to = "fleet",
+    values_to = "effort"
+  )
+
+ggplot(water_effort) +
+  geom_sf(aes(fill = (effort)), color = NA) +
+  scale_fill_viridis_c(name = "Effort") +
+  facet_wrap(~ fleet, nrow = 1) +
+  theme_void() +
+  ggtitle("Fishing effort by fleet (Year 60, Month 12)")
 
 
-### relative catch of fleets --------------------------------------------------
+plot_data <- water_effort[water_effort$fleet == "commercial", c("effort")] # keeps geometry automatically
 
-avg_weight <- sum(ModelOutput$catch_weight_by_fleet[1,][[1]]) / 
-  sum(ModelOutput$catch_number_by_fleet[1,][[1]])
-
-n_fleets <- length(fleet_names)
-fleet_totals <- sapply(1:n_fleets, function(f) {
-  arr <- ModelOutput$catch_weight_by_fleet[[f, 1]]
-  sum(arr)  # sum everything: cells, months, ages/years
-})
-
-plot_df <- data.frame(
-  fleet = fleet_names[1:n_fleets],
-  catch_kg = fleet_totals
-)
-
-ggplot(plot_df, aes(x = fleet, y = catch_kg, fill = fleet)) +
-  geom_bar(stat = "identity") +
-  theme_bw() +
-  theme(legend.position = "none")
+mapview::mapview(plot_data,
+        zcol = "effort",
+        #col.regions = viridisLite::viridis(100),
+        layer.name = "Effort")
 
 
+### CHECK: relative catch of fleets -------------------------------------------
+
+yearly_catch <- as.data.frame(BURN_IN_catch_weight)
+names(yearly_catch) <- fleet_names
+ggplot(yearly_catch) +
+  geom_line(lwd = 1, aes(x = 1:n_yrs_modelled, y = commercial), colour = "red") +
+  geom_line(lwd = 1, aes(x = 1:n_yrs_modelled, y = boat_rec), colour = "blue") +
+  geom_line(lwd = 1, aes(x = 1:n_yrs_modelled, y = shore_rec), colour = "green") +
+  labs(x = "Year", y = "Catch (kg)", title = "Annual catch by fleet") +
+  theme_bw()
 
 ## END ##
