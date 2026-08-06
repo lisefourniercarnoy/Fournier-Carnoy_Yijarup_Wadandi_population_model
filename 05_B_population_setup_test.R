@@ -139,7 +139,7 @@ mean_life_hist <- data.frame(
 lengths <- (0:(max_length)) # start at zero, but all lengths should start at 10mm (see here for post settlement juvenile size ref https://rsnz.onlinelibrary.wiley.com/doi/10.1080/00288330.2014.892013)
 
 # define your length bins (e.g. 50mm bins)
-bin_breaks <- seq(0, max_length+100, by = length_bin_size) # +100 for extra big fish
+bin_breaks <- seq(0, round(max_length, digits = -1), by = length_bin_size)
 bin_labels <- seq_along(bin_breaks[-1])  # indices 1 to n_bins
 lengths_bins <- lengths[seq(1, length(lengths), length_bin_size)] # 5cm bins
 
@@ -219,7 +219,7 @@ lengths = as.numeric(colnames(length_age_matrix)) # the midpoints of the length 
 n_fish  <- 100000
 
 tag_recap <- data.frame( # random set of lengths between min and max
-  release_length = runif(n_fish, min = 10, max = max(lengths_bins)) # random lengths >10mm (min juvenile size)
+  release_length = runif(n_fish, min = 10, max = max_length) # random lengths >10mm (min juvenile size)
 ) %>% 
   glimpse()
 
@@ -244,7 +244,7 @@ tag_recap$release_age <- sapply(tag_recap$release_length, function(LENGTH) {
   
 }) # this obtains the age (as an average from the likely ages) for every fish we released
 
-head(tag_recap)
+tail(tag_recap)
 
 plot(x = tag_recap$release_age, y = tag_recap$release_length) # the largest fish are assigned to the oldest age class.
 
@@ -267,7 +267,7 @@ library(truncnorm)
 tag_recap$recapture_length <- rtruncnorm(
   n    = n_fish,
   a    = tag_recap$release_length, # lower bound (no shrinkage)
-  b    = max(lengths_bins), # upper bound (largest size)
+  b    = max_length, # upper bound (largest size)
   mean = tag_recap$release_length + growth_increment,
   sd   = sd_recap
 )
@@ -296,7 +296,6 @@ tag_recap %>%
     )
   )) %>%
   ggplot(aes(x = growth, y = length_bin)) +
-  #xlim(c(0, 150)) +
   geom_density_ridges_gradient(scale = 2, rel_min_height = 0.01) +
   labs(x = "growth in 1 month (mm)", y = "release length (mm)") +
   theme_ridges()
@@ -332,11 +331,6 @@ for (i in 1:n_bins) {
   
   ATM[i,] <- probs / sum(probs) # scale so it all adds up to 1
 }
-
-# the last bin is NAN, so need to fix it manually. largest fish stay in their length bin
-ATM[nrow(ATM), ] <- 0
-ATM[nrow(ATM), nrow(ATM)] <- 1 # this is a weird situation. essentially in the function, a 40 year old fish is killed off no matter its length. however, a 20yo fish can be the max length, and stay there (since it can't shrink in size) for 20 years.
-# this accumulation is a problem. here we're hard-coding the largest sized fish, so that they disappear off the face of the model. this way the accumulation is less problematic.
 
 tail(ATM) # and that's the age transition matrix!
 
@@ -452,7 +446,7 @@ equil_recr # this says 'however, under fished equilibrium, 1 recruit produces ~9
 ## here we scale the spawning biomasses to the level of recruitment, to make a starting population.
 ## first it's age-based, then we transform it into a age-length-based structure.
 
-init_recr <- 5000 # in thousands - 4000 is too small
+init_recr <- 1 # in thousands - 4000 is too small
 
 # calculate initial fished recruitment (how many new fish from the fished population)
 init_fished_recr <- (fished_female_spawning_biomass-alpha) / (fished_female_spawning_biomass*beta) * init_recr 
@@ -569,6 +563,8 @@ for (YEAR in year_start:year_end) {
 }
 head(sel_ret)
 
+par(mfrow=c(1, 1))
+plot(sel_ret[,1], type = "l")
 
 ## Saving files ---------------------------------------------------------------
 
