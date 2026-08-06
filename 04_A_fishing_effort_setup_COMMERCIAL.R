@@ -62,187 +62,6 @@ NCELL <- nrow(water)
 
 fishing_info_list <- list()
 
-# 1. travel cost = distance from access points * fuel price -------------------
-
-## 1.a fuel price -------------------------------------------------------------
-
-# obtain fuel prices from the literature
-fuel_price <- read.csv("data/input_data/fuel_prices.csv") # data from https://www.bitre.gov.au/sites/default/files/is_082.pdf
-base_cpi <- fuel_price$CPI[fuel_price$year == 2012]
-fuel_price$real_price <- fuel_price$petrol_price * (base_cpi / fuel_price$CPI) # adjust the fuel prices for inflation
-
-plot(fuel_price$real_price ~ fuel_price$year, type = "l") # plot check
-
-# fill in missing values
-fuel_price_clean <- data.frame(year = year_start:year_end) %>%
-  left_join(fuel_price %>% dplyr::select(year, real_price), by = "year") %>%
-  fill(real_price, .direction = "downup") %>% 
-  glimpse()
-plot(fuel_price_clean$real_price ~ fuel_price_clean$year, type = "l") # plot check
-
-
-## 1.b distance from access points --------------------------------------------
-
-water <- readRDS(file_water)
-
-BR_n <- st_read(file_boat_ramps_n) %>% 
-  st_transform(common_crs) %>%
-  st_make_valid() %>%
-  dplyr::filter(!is.na(ABS_name)) %>% # select the ramps that are mentioned in the ABS reports - these are the commercial ramps
-  mutate(build_year = 1900, # all commercial ramps start in 1900 cuz some of the build years dont make sense
-         build_mnth = 1,     # assume Jan if unknown
-         norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
-  glimpse()
-
-
-BR_w <- st_read(file_boat_ramps_w) %>% 
-  st_transform(common_crs) %>%
-  st_make_valid() %>%
-  mutate(build_year = 1900, # all commercial ramps start in 1900 cuz some of the build years dont make sense
-         build_mnth = 1,     # assume Jan if unknown
-         norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
-  glimpse()
-
-# for commercial fishing, only a few boat ramps are useds, so select only correct ramps (see Andrea Gaynor's historical fishing resources, fishing localities in ABS stats)
-unique(BR_w$name)
-BR_w <- BR_w %>% 
-  dplyr::filter(BR_w$name %in% c("SC_Augusta_Ellis_St_Jetty", "WC_Gnarabup", "WC_Hamelin_Bay",
-                                 "GB_Quindalup", "GB_Eagle_Bay", "GB_Bunbury_Stirling_St", "GB_Busselton_Georgette_Street"))
-plot(water$geometry); plot(BR_w$geometry, col = colour_palette[5], pch = 16, cex = 1, add = TRUE)
-
-glimpse(BR_n)
-glimpse(BR_w)
-
-BR <- rbind(BR_n %>% dplyr::select(name, geometry) %>% mutate(region = "north"), 
-            BR_w %>% dplyr::select(name, geometry) %>% mutate(region = "wadandi")) %>% 
-  st_transform(common_crs) %>%
-  st_make_valid() %>% 
-  glimpse()
-
-plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add = TRUE)
-
-network <- st_read(file_network) %>% 
-  st_transform(common_crs); plot(network$geometry)
-BR <- st_as_sf(BR); BR <- BR %>% st_transform(common_crs) 
-
-# find the centre of each grid cell
-sf::sf_use_s2(FALSE)
-centroids <- st_centroid(st_make_valid(water))
-sf::sf_use_s2(TRUE)
-points <- as.data.frame(st_coordinates(centroids))%>% # the points start at the bottom left and then work their way their way right
-  mutate(ID = row_number()) 
-points_sf <- st_as_sf(points, coords = c("X", "Y")) 
-st_crs(points_sf) <- common_crs
-
-network <- as_sfnetwork(network, directed = FALSE) %>%
-  activate("edges") %>%
-  mutate(weight = edge_length())
-
-net <- activate(network, "nodes")
-net <- net %>% st_transform(common_crs) 
-
-# measure the distance from access points to cell centroids
-network_matrix <- st_network_cost(net, from = BR, to = points_sf)
-dim(network_matrix) # number of ramps x number of cells
-
-glimpse(network_matrix)
-access_dist <- as.data.frame(t(network_matrix))
-colnames(access_dist) <- BR$name
-access_dist$ID <- water$ID
-access_dist <- access_dist / 1000
-head(access_dist) # this gives us each cell's distance to the access points
-
-## sanity check station
-access_dist <- access_dist %>% mutate(ID = centroids$ID)
-water_dist_long <- water %>% left_join(access_dist, by = "ID") %>% pivot_longer(cols = BR$name, names_to = "Ramp", values_to = "Distance_km")
-ggplot(water_dist_long %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[1:10])) + 
-  geom_sf(aes(fill = as.numeric(Distance_km)), color = NA) + 
-  scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ Ramp, ncol = 5) + 
-  labs(title = "Cell distance to access points", fill = "Distance (km)") +
-  theme_minimal()
-
-
-## 1.c calculate travel cost --------------------------------------------------
-
-glimpse(access_dist) # cell x access_point
-glimpse(fuel_price_clean) # vec year
-
-# figure out, for each ramp, the travel cost (cell x access_p x years)
-dist_matrix <- as.matrix(access_dist[, -ncol(access_dist)])  # drop ID column
-
-travel_cost <- array(rep(dist_matrix, times = nrow(fuel_price_clean)),
-                     dim = c(nrow(access_dist), 
-                             ncol(access_dist)-1, 
-                             nrow(fuel_price_clean))
-                     )
-
-
-travel_cost <- sweep(
-  travel_cost,
-  MARGIN = 3,
-  STATS  = fuel_price_clean$real_price,
-  FUN    = "*"
-) # calculate the product (fun = "*") of access_dist using fuel price (stats =) across years (margin = 3), 
-
-## sanity check
-par(mfrow = c(1,1))
-test1 <- travel_cost[1,1,] # cell 1 from access_p 1
-test2 <- travel_cost[1,2,] # cell 1 from access_p 2
-
-plot(test2, type = "l", col = "red")
-lines(test1, type = "l")
-
-
-
-# 2. calculate cell utility ---------------------------------------------------
-
-## 2.a. distance to shore -----------------------------------------------------
-
-shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>%
-  st_make_valid() %>% 
-  st_union() %>% 
-  st_transform(st_crs(water)) %>%  # find shore. we will use this to calculate distance of all cells to shore.
-  st_as_sf()
-
-network <- st_read(file_network); plot(network$geometry)
-
-centroids <- st_centroid(water %>% st_make_valid())
-shore_dist <- st_distance(centroids, shore) / 1000 # distance from shore in km
-shore_dist <- as.data.frame(shore_dist) %>% mutate(ID = water$ID, shore_dist = as.numeric(shore_dist))
-glimpse(shore_dist)
-
-# plot check
-ggplot(data = water %>% dplyr::select(!where(is.list)) %>% mutate(shore_dist = as.numeric(shore_dist$shore_dist))) + 
-  geom_sf(aes(fill = shore_dist), col = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4])
-
-
-## 2.b cell utility = shore_dist / (travel cost + 1) --------------------------
-
-glimpse(shore_dist)
-glimpse(travel_cost)
-
-# we're making cell x access_p x year
-
-utility <- array(shore_dist$shore_dist,
-                 dim = c(nrow(access_dist), 
-                         ncol(access_dist)-1, 
-                         nrow(fuel_price_clean))
-)
-
-utility <- (utility / (travel_cost + 1))
-
-## sanity check - is utility higher for areas close to access points but far from shore)
-test_access = 9
-ggplot() +
-  geom_sf(data = water %>% dplyr::select(!where(is.list)) %>% mutate(test = utility[, test_access, 1]), 
-          aes(fill = (test)), 
-          col = NA) +
-  geom_sf(data = BR[test_access,] %>% st_set_crs(4326) %>% st_transform(st_crs(water)), col = "red") +
-  scale_fill_gradientn(colours = colour_palette[6:4])
-# ayoooo im a geniuuus
-
 
 # 3. fishability --------------------------------------------------------------
 
@@ -426,36 +245,220 @@ ggplot(data = water %>% mutate(test = test)) +
 
 ### 3.b.b calculate catchability ----------------------------------------------
 
-glimpse(water_area)
-glimpse(fishable_depth_cell_month_year)
+# catchability is the % of the population being harvested by 1 unit effort.
+# it is unknowable, so we will need to calibrate it. 
+# see script 04_D for process 
 
-fishable_area <- water_area * fishable_depth_cell_month_year
+q <- readRDS("data/output_data/04_D_commercial_q.rds")$Q
 
-## sanity check station 
-test_year = 80
-test <- fishable_area[, 1, test_year]
-ggplot(data = water %>% mutate(test = test)) +
-  geom_sf(aes(fill = test), colour = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
-  theme_minimal()
-
-# now divide by the sum of fishable area.
-glimpse(fishable_area)
-fishable_area_sum <- colSums(fishable_area) # month x year matrix
-
-catchability <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
-dim(fishable_area)
-dim(fishable_area_sum)
-
+fishable_area <- water_area * fishable_depth_cell_month_year # cell x month x year
+fishable_area_sum <- colSums(fishable_area) # month x year
+fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
+catchability <- array(0, dim = dim(fishable_area))
+for (y in 1:dim(fishable_area)[3]) {
+  for (m in 1:12) {
+    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
+  }
+}
+catchability[catchability == Inf] <- 0  # if cells are not fishable, division by zero (in loop above). change to zero to avoid messing everything up later on.
 
 ## sanity check station 
 test_year = 100
 test <- catchability[, 1, test_year]
-ggplot(data = water %>% mutate(test = test)) +
+ggplot(data = water %>% mutate(test = (test))) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
   theme_minimal()
+
+
+# 1. travel cost = distance from access points * fuel price -------------------
+
+## 1.a fuel price -------------------------------------------------------------
+
+# obtain fuel prices from the literature
+fuel_price <- read.csv("data/input_data/fuel_prices.csv") # data from https://www.bitre.gov.au/sites/default/files/is_082.pdf
+base_cpi <- fuel_price$CPI[fuel_price$year == 2012]
+fuel_price$real_price <- fuel_price$petrol_price * (base_cpi / fuel_price$CPI) # adjust the fuel prices for inflation
+
+plot(fuel_price$real_price ~ fuel_price$year, type = "l") # plot check
+
+# fill in missing values
+fuel_price_clean <- data.frame(year = year_start:year_end) %>%
+  left_join(fuel_price %>% dplyr::select(year, real_price), by = "year") %>%
+  fill(real_price, .direction = "downup") %>% 
+  glimpse()
+plot(fuel_price_clean$real_price ~ fuel_price_clean$year, type = "l") # plot check
+
+
+## 1.b distance from access points --------------------------------------------
+
+water <- readRDS(file_water)
+
+BR_n <- st_read(file_boat_ramps_n) %>% 
+  st_transform(common_crs) %>%
+  st_make_valid() %>%
+  dplyr::filter(!is.na(ABS_name)) %>% # select the ramps that are mentioned in the ABS reports - these are the commercial ramps
+  mutate(build_year = 1900, # all commercial ramps start in 1900 cuz some of the build years dont make sense
+         build_mnth = 1,     # assume Jan if unknown
+         norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
+  glimpse()
+
+
+BR_w <- st_read(file_boat_ramps_w) %>% 
+  st_transform(common_crs) %>%
+  st_make_valid() %>%
+  mutate(build_year = 1900, # all commercial ramps start in 1900 cuz some of the build years dont make sense
+         build_mnth = 1,     # assume Jan if unknown
+         norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
+  glimpse()
+
+# for commercial fishing, only a few boat ramps are useds, so select only correct ramps (see Andrea Gaynor's historical fishing resources, fishing localities in ABS stats)
+unique(BR_w$name)
+BR_w <- BR_w %>% 
+  dplyr::filter(BR_w$name %in% c("SC_Augusta_Ellis_St_Jetty", "WC_Gnarabup", "WC_Hamelin_Bay",
+                                 "GB_Quindalup", "GB_Eagle_Bay", "GB_Bunbury_Stirling_St", "GB_Busselton_Georgette_Street"))
+plot(water$geometry); plot(BR_w$geometry, col = colour_palette[5], pch = 16, cex = 1, add = TRUE)
+
+glimpse(BR_n)
+glimpse(BR_w)
+
+BR <- rbind(BR_n %>% dplyr::select(name, geometry) %>% mutate(region = "north"), 
+            BR_w %>% dplyr::select(name, geometry) %>% mutate(region = "wadandi")) %>% 
+  st_transform(common_crs) %>%
+  st_make_valid() %>% 
+  glimpse()
+
+plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add = TRUE)
+
+network <- st_read(file_network) %>% 
+  st_transform(common_crs); plot(network$geometry)
+BR <- st_as_sf(BR); BR <- BR %>% st_transform(common_crs) 
+
+# find the centre of each grid cell
+sf::sf_use_s2(FALSE)
+centroids <- st_centroid(st_make_valid(water))
+sf::sf_use_s2(TRUE)
+points <- as.data.frame(st_coordinates(centroids))%>% # the points start at the bottom left and then work their way their way right
+  mutate(ID = row_number()) 
+points_sf <- st_as_sf(points, coords = c("X", "Y")) 
+st_crs(points_sf) <- common_crs
+
+network <- as_sfnetwork(network, directed = FALSE) %>%
+  activate("edges") %>%
+  mutate(weight = edge_length())
+
+net <- activate(network, "nodes")
+net <- net %>% st_transform(common_crs) 
+
+# measure the distance from access points to cell centroids
+network_matrix <- st_network_cost(net, from = BR, to = points_sf)
+dim(network_matrix) # number of ramps x number of cells
+
+glimpse(network_matrix)
+access_dist <- as.data.frame(t(network_matrix))
+colnames(access_dist) <- BR$name
+access_dist$ID <- water$ID
+access_dist <- access_dist / 1000
+head(access_dist) # this gives us each cell's distance to the access points
+
+## sanity check station
+access_dist <- access_dist %>% mutate(ID = centroids$ID)
+water_dist_long <- water %>% left_join(access_dist, by = "ID") %>% pivot_longer(cols = BR$name, names_to = "Ramp", values_to = "Distance_km")
+ggplot(water_dist_long %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[1:10])) + 
+  geom_sf(aes(fill = as.numeric(Distance_km)), color = NA) + 
+  scale_fill_gradientn(colours = colour_palette[4:6]) +
+  facet_wrap(~ Ramp, ncol = 5) + 
+  labs(title = "Cell distance to access points", fill = "Distance (km)") +
+  theme_minimal()
+
+
+## 1.c calculate travel cost --------------------------------------------------
+
+glimpse(access_dist) # cell x access_point
+glimpse(fuel_price_clean) # vec year
+
+# figure out, for each ramp, the travel cost (cell x access_p x years)
+dist_matrix <- as.matrix(access_dist[, -ncol(access_dist)])  # drop ID column
+
+travel_cost <- array(rep(dist_matrix, times = nrow(fuel_price_clean)),
+                     dim = c(nrow(access_dist), 
+                             ncol(access_dist)-1, 
+                             nrow(fuel_price_clean))
+                     )
+
+
+travel_cost <- sweep(
+  travel_cost,
+  MARGIN = 3,
+  STATS  = fuel_price_clean$real_price,
+  FUN    = "*"
+) # calculate the product (fun = "*") of access_dist using fuel price (stats =) across years (margin = 3), 
+
+## sanity check
+par(mfrow = c(1,1))
+test1 <- travel_cost[1,1,] # cell 1 from access_p 1
+test2 <- travel_cost[1,2,] # cell 1 from access_p 2
+
+plot(test2, type = "l", col = "red")
+lines(test1, type = "l")
+
+
+# 2. calculate cell attractivity ----------------------------------------------
+
+## 2.a. distance to shore -----------------------------------------------------
+
+shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>%
+  st_make_valid() %>% 
+  st_union() %>% 
+  st_transform(st_crs(water)) %>%  # find shore. we will use this to calculate distance of all cells to shore.
+  st_as_sf()
+
+network <- st_read(file_network); plot(network$geometry)
+
+centroids <- st_centroid(water %>% st_make_valid())
+shore_dist <- st_distance(centroids, shore) / 1000 # distance from shore in km
+shore_dist <- as.data.frame(shore_dist) %>% mutate(ID = water$ID, shore_dist = as.numeric(shore_dist))
+glimpse(shore_dist)
+
+# plot check
+ggplot(data = water %>% dplyr::select(!where(is.list)) %>% mutate(shore_dist = as.numeric(shore_dist$shore_dist))) + 
+  geom_sf(aes(fill = shore_dist), col = NA) +
+  scale_fill_gradientn(colours = colour_palette[6:4])
+
+
+## 2.b cell attractivity = shore_dist / (travel cost + 1) --------------------------
+
+glimpse(shore_dist)
+glimpse(travel_cost)
+
+# we're making cell x access_p x year
+
+utility <- array(shore_dist$shore_dist,
+                 dim = c(nrow(access_dist), 
+                         ncol(access_dist)-1, 
+                         nrow(fuel_price_clean))
+)
+
+# also add depth fishability to the utility
+dim(fishable_depth_cell_month_year)
+dim(utility)
+fishable_depth_cell_year <- fishable_depth_cell_month_year[, 1, ]  # cell x year
+all(sapply(1:12, function(m) identical(fishable_depth_cell_month_year[, m, ], fishable_depth_cell_month_year[, 1, ])))
+dim(fishable_depth_cell_year)
+
+utility <- (utility / (travel_cost + 1))
+
+utility <- sweep(utility, c(1,3), fishable_depth_cell_year, "*")
+
+
+## sanity check - is attractivity higher for areas close to access points but far from shore
+test_access = 9
+ggplot() +
+  geom_sf(data = water %>% dplyr::select(!where(is.list)) %>% mutate(test = utility[, test_access, 1]), 
+          aes(fill = (test)), 
+          col = NA) +
+  geom_sf(data = BR[test_access,] %>% st_transform(4326) %>% st_transform(st_crs(water)), col = "red") +
+  scale_fill_gradientn(colours = colour_palette[6:4])
 
 
 # 4. set up fishing days values -----------------------------------------------
@@ -471,50 +474,21 @@ ggplot(data = water %>% mutate(test = test)) +
 
 #### 4.N.a. enter the overall effort values (boat days) -----------------------
 
-# obtain boat days from the literature (see google slides on reconstruction)
-years     <- c(1975,1976,1977,1978,1979,1980,1981,1982,1983,1984,1985,1986,1987,
-               1988,1989,1990,1991,1992,1993,1994,1995,1996,1997,1998,1999,2000,
-               2001,2002,2003,2004,2005,2006,2007,2008)
-boat_days <- c(4000,3500,3000,3500,4000,4250,4250,4250,5250,5250,5500,3500,4500,
-               4500,3250,3000,2500,2750,2750,3000,2500,2500,4000,3750,3500,3000,
-               3750,3750,3750,3750,3750,3750,3750,0)
-
-boat_days_lit_n <- data.frame(years, boat_days)
-
-plot(boat_days_lit_n$years, boat_days_lit_n$boat_days, 
-     pch = 19, col = colour_palette[4], xlim = c(year_start, year_end), ylim = c(0, max(boat_days_lit_n)), 
-     xlab = "Year", ylab = "Boat Days", main = "Original + Fake Boat Days")
-
-# fill in with fake values
-years     <- c(1900,1950,0)
-boat_days <- c(500, 1700,0)
-boat_days_fake <- data.frame(years, boat_days)
-
-points(boat_days_fake$years, boat_days_fake$boat_days, 
-       pch = 17, col = colour_palette[6])
-legend("topright", legend = c("Original Data", "Fake Data"), col = c(colour_palette[4], colour_palette[6]), pch = c(19, 17))
-
-
-# fill in the gaps to obtain values for every year
-years <- c(boat_days_lit_n$years, boat_days_fake$years)
-boat_days <- c(boat_days_lit_n$boat_days, boat_days_fake$boat_days)
-
-sorted_index <- order(years) # sort data in order (important for interpolation)
-all_years_sorted <- years[sorted_index]
-all_boat_days_sorted <- boat_days[sorted_index]
-
 years_full <- year_start:year_end
-# linear interpolation with extrapolation
-interp <- approx(x = all_years_sorted, y = all_boat_days_sorted, xout = years_full, method = "linear", rule = 2)
-annual_effort_n <- data.frame(year = interp$x, boat_days = interp$y)
+g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
+  dplyr::select(c(YEAR, boat.days.north)) %>% # select only boat rec fishing columns.
+  glimpse()
 
+plot(g_sheets$YEAR, g_sheets$boat.days.north)
 
-# sanity check station
-plot(annual_effort_n$year, annual_effort_n$boat_days, type = "l", col = colour_palette[5], lwd = 4,
-     main = "Boat Days in Metro area \nfrom the Literature \n(with some extrapolation)", 
+annual_effort_boat <- g_sheets %>% dplyr::select(c(YEAR, boat.days.north)) %>% 
+  rename(year = YEAR,
+         boat_days = boat.days.north)
+annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
+
+# check
+plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
-lines(boat_days_lit_n$years, boat_days_lit_n$boat_days, col = colour_palette[4], lwd = 4)
-legend("topleft", legend = c("From literature", "Fake"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
 
 
 #### 4.N.b. split yearly fishing effort by month ------------------------------
@@ -535,7 +509,7 @@ boat_effort_n <- expand.grid(
 ) %>%
   arrange(year, month) %>%
   mutate(
-    annual_boat_days = rep(annual_effort_n$boat_days, each = 12),
+    annual_boat_days = rep(annual_effort_boat$boat_days, each = 12),
     monthly_effort = annual_boat_days * seasonal_multipliers[month]
   ) %>%
   dplyr::select(year, month, monthly_effort)
@@ -628,45 +602,21 @@ ggplot(ramp_effort_n, aes(x=year, y=adjusted_effort)) +
 
 #### 4.W.a. enter the overall effort values (boat days) -----------------------
 
-# obtain boat days from the literature (see google slides on reconstruction)
-years     <- c(1975:2024)
-boat_days <- c(3000,3250,3000,3500,2750,3500,3250,3750,4000,4500,4500,3500,3250,
-               2250,1500,1250,1250,1000,1000,1250,1000,1000,1500,1250,1250,1250,
-               1500,1500,1500,1750,1500,1500,990,653.4,500,520,540,560,600,600,
-               600,600,550,680,700,720,740,760,800,1000)
-boat_days_lit_w <- data.frame(years, boat_days)
-
-plot(boat_days_lit_w$years, boat_days_lit_w$boat_days, 
-     pch = 19, col = colour_palette[4], xlim = c(year_start, year_end), ylim = c(0, max(boat_days_lit_w)), 
-     xlab = "Year", ylab = "Boat Days", main = "Original + Fake Boat Days")
-
-# adding fake boat days to fill out.
-years     <- c(1900,1950,1500)
-boat_days <- c(400, 1500,2024)
-boat_days_fake <- data.frame(years, boat_days)
-
-points(boat_days_fake$years, boat_days_fake$boat_days, pch = 17, col = colour_palette[6])
-legend("topright", legend = c("Original Data", "Fake Data"), col = c(colour_palette[4], colour_palette[6]), pch = c(19, 17))
-
-# fill in the gaps to obtain values for every year
-years <- c(boat_days_lit_w$years, boat_days_fake$years)
-boat_days <- c(boat_days_lit_w$boat_days, boat_days_fake$boat_days)
-
-sorted_index <- order(years) # sort data in order (important for interpolation)
-all_years_sorted <- years[sorted_index]
-all_boat_days_sorted <- boat_days[sorted_index]
-
 years_full <- year_start:year_end
-# linear interpolation with extrapolation
-interp <- approx(x = all_years_sorted, y = all_boat_days_sorted, xout = years_full, method = "linear", rule = 2)
-annual_effort_w <- data.frame(year = interp$x, boat_days = interp$y)
+g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
+  dplyr::select(c(YEAR, boat.days.wadandi)) %>% # select only boat rec fishing columns.
+  glimpse()
 
-# sanity check
-plot(annual_effort_w$year, annual_effort_w$boat_days, type = "l", col = colour_palette[5], lwd = 4,
-     main = "Boat Days in Wadandi Country \nfrom the Literature \n(with some extrapolation)", 
+plot(g_sheets$YEAR, g_sheets$boat.days.wadandi)
+
+annual_effort_boat <- g_sheets %>% dplyr::select(c(YEAR, boat.days.wadandi)) %>% 
+  rename(year = YEAR,
+         boat_days = boat.days.wadandi)
+annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
+
+# check
+plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
-lines(boat_days_lit_w$years, boat_days_lit_w$boat_days, col = colour_palette[4], lwd = 4)
-legend("topleft", legend = c("From literature", "Fake"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
 
 
 #### 4.W.b. split yearly fishing effort by month ------------------------------
@@ -687,7 +637,7 @@ boat_effort_w <- expand.grid(
 ) %>%
   arrange(year, month) %>%
   mutate(
-    annual_boat_days = rep(annual_effort_w$boat_days, each = 12),
+    annual_boat_days = rep(annual_effort_boat$boat_days, each = 12),
     monthly_effort = annual_boat_days * seasonal_multipliers[month]
   ) %>%
   dplyr::select(year, month, monthly_effort)
@@ -714,19 +664,6 @@ prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
 plot(prop_month_ave)
 saveRDS(prop_month_ave, "data/output_data/04_A_commercial_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
-
-# sanity check station
-plot(annual_effort_n$year, annual_effort_n$boat_days, type = "l", col = colour_palette[5], lwd = 4,
-     main = "Commercial Boat Days in \nWadandi Country (dashed) and Metro (solid)", 
-     xlab = "Year", ylab = "Boat Days")
-lines(boat_days_lit_n$years, boat_days_lit_n$boat_days, col = colour_palette[4], lwd = 4)
-legend("topleft", legend = c("From literature", "Fake"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
-
-lines(annual_effort_w$year[annual_effort_w$year < min(boat_days_lit_w$years)], annual_effort_w$boat_days[annual_effort_w$year < min(boat_days_lit_w$years)], lty = "dashed", col = colour_palette[5], lwd = 2)
-lines(annual_effort_w$year[annual_effort_w$year > max(boat_days_lit_w$years)], annual_effort_w$boat_days[annual_effort_w$year > max(boat_days_lit_w$years)], lty = "dashed", col = colour_palette[5], lwd = 2)
-
-lines(boat_days_lit_w$years, boat_days_lit_w$boat_days, lty = "dashed", col = colour_palette[4], lwd = 2)
-legend("topleft", legend = c("From literature", "Fake"), col = c(colour_palette[4], colour_palette[5]), lwd = 4)
 
 
 #### 4.W.c. distribute monthly effort into boat ramps -------------------------
@@ -873,15 +810,9 @@ for(AP in 1:(ncol(burn_in_effort)-1)){
   burn_in_effort[AP+1]= burn_in_effort$effort*effort_prop[AP, "com_prop"]
 }
 
-burn_in <- array(0, dim = c(12, length(BR$name), n_years_tot))
-
-for (i in 1:n_years_tot) {
-  burn_in[, , i] <- as.matrix(burn_in_effort[, -1])
-} # all years have the same small amount of fishing, so just copy-paste it in all years. this format is needed by the C++ function.
+burn_in <- as.matrix(burn_in_effort[-1])
 
 saveRDS(burn_in, file = "data/output_data/04_A_commercial_burn_in_effort.rds")
 # for the burn in, just replace the corresponding list object from section 5 with this one.
-
-## NEED TO DO THE SAME BURN IN FOR REC FISHING
 
 ### END ###

@@ -184,67 +184,6 @@ plot(test2, type = "l", col = "red")
 lines(test1, type = "l")
 
 
-# 2. calculate cell utility ---------------------------------------------------
-
-## 2.a add in build year ------------------------------------------------------
-
-# there are so many access points, some of which are quite recent. we'll zero the utility of access points if they haven't been built yet.
-
-build_year <- array(0,
-                    dim = c(ncol(access_dist)-1, 
-                            n_years_tot)
-)
-
-for (ACCESS in 1:nrow(BR)) {
-  for (YEAR in 1:n_years_tot) {
-    yr <- year_start + YEAR - 1
-    build_year[ACCESS, YEAR] <- ifelse(BR$build_year[ACCESS] <= yr, 1, NA)
-  }
-}
-
-
-## 2.b cell utility = 1 / ((built * travel cost) + 1) -------------------------
-
-glimpse(access_dist)
-
-# we're making cell x access_p x year
-
-utility <- array(NA,
-                 dim = c(nrow(access_dist), 
-                         ncol(access_dist)-1, 
-                         n_years_tot)
-)
-
-for (ACCESS in 1:ncol(utility)) {
-  for (YEAR in 1:n_years_tot) {
-    # utility = cell x access x year
-    # build_year = access x year
-    # access_dist = cell x access    
-    utility[, ACCESS, YEAR] <- 1 / (build_year[ACCESS, YEAR] * travel_cost[, ACCESS, YEAR] + 1)
-  }
-}
-utility[,1:20,100]
-utility[!is.finite(utility)] <- 0
-utility[is.na(utility)] <- 0
-
-
-
-
-## sanity check - is utility higher for areas close to access points but far from shore)
-test_access = 10
-test_year = 125
-test <- water %>% dplyr::select(!where(is.list)) %>% mutate(test = log(utility[, test_access, test_year]))
-mapview::mapview(test, zcol = "test") + mapview::mapview(BR[test_access,])
-
-ggplot() +
-  geom_sf(data = water %>% dplyr::select(!where(is.list)) %>% mutate(test = utility[, test_access, 125]), 
-          aes(fill = (test)), 
-          col = NA) +
-  geom_sf(data = BR[test_access,] %>% st_set_crs(common_crs) %>% st_transform(st_crs(water)), col = "red") +
-  scale_fill_gradientn(colours = colour_palette[6:4])
-# ayoooo im a geniuuus
-
-
 # 3. fishability --------------------------------------------------------------
 
 # fishability refers to whether this cell in this month and this year is open to fishing.
@@ -430,38 +369,122 @@ ggplot(data = water %>% mutate(test = test)) +
 
 ### 3.b.b calculate catchability ----------------------------------------------
 
-glimpse(water_area)
-glimpse(fishable_depth_cell_month_year)
+# catchability is the % of the population being harvested by 1 unit effort.
+# it is unknowable, so we will need to calibrate it.
+# see script 04_D for process 
+
+# below we need to split the q that we calibrated for the whole area in script 04_D, 
+# so that larger cells have a larger share of q.
+q <- readRDS("data/output_data/04_D_boat_rec_q.rds")$Q
+
 fishable_area <- water_area * fishable_depth_cell_month_year
+fishable_area_sum <- colSums(fishable_area)
+fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
+
+catchability <- array(0, dim = dim(fishable_area))
+for (y in 1:dim(fishable_area)[3]) {
+  for (m in 1:12) {
+    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
+  }
+}
+catchability[catchability == Inf] <- 0  # avoid division by zero
+
+# check that the sum of all cells' catchability in a month is equal to the correct q.
+test_year =1
+q[test_year] == sum(catchability[,1,test_year])
+
+head(catchability[,,2])
+
 
 ## sanity check station 
-test_year = 120
-test <- fishable_area[, 1, test_year]
-ggplot(data = water %>% mutate(test = test)) +
-  geom_sf(aes(fill = test), colour = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
-  theme_minimal()
-
-# now divide by the sum of fishable area.
-glimpse(fishable_area)
-fishable_area_sum <- colSums(fishable_area) # month x year matrix
-
-catchability <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
-dim(fishable_area)
-dim(fishable_area_sum)
-
-
-## sanity check station 
-test_year = 125
+test_year = 100
 test <- catchability[, 1, test_year]
-mapview::mapview(water %>% dplyr::select(!where(is.list)) %>% mutate(test = test), zcol = "test")
-
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
+
+
+# 2. calculate cell utility ---------------------------------------------------
+
+## 2.a add in build year ------------------------------------------------------
+
+# there are so many access points, some of which are quite recent. we'll zero the utility of access points if they haven't been built yet.
+
+build_year <- array(0,
+                    dim = c(ncol(access_dist)-1, 
+                            n_years_tot)
+)
+
+for (ACCESS in 1:nrow(BR)) {
+  for (YEAR in 1:n_years_tot) {
+    yr <- year_start + YEAR - 1
+    build_year[ACCESS, YEAR] <- ifelse(BR$build_year[ACCESS] <= yr, 1, NA)
+  }
+}
+
+
+## 2.b cell utility =  ((built * travel cost) + 1) -------------------------
+
+# here we're not making an inverse relationship, because Matt's coefficients are negative, which would make the inverse relationship we want:
+# if travel cost is low (e.g. 1), the inverse relationship would be (1/1 = 1), and with the coef it would be (-0.848 * log(1) = 0) compare a cell with travel cost of 100 (-0.848 * log(1/100) = 3.9), the utility of the costly cell is very high.
+# but if we remove that inverse relationship: (-0.848 * log(1) = 0) and (-0.848 * log(100) = -3.9). the costly cell is not as attractive.
+glimpse(access_dist)
+
+# we're making cell x access_p x year
+
+utility <- array(NA,
+                 dim = c(nrow(access_dist), 
+                         ncol(access_dist)-1, 
+                         n_years_tot)
+)
+
+# also add depth fishability to the utility
+dim(fishable_depth_cell_month_year)
+dim(utility)
+fishable_depth_cell_year <- fishable_depth_cell_month_year[, 1, ]  # cell x year
+all(sapply(1:12, function(m) identical(fishable_depth_cell_month_year[, m, ], fishable_depth_cell_month_year[, 1, ])))
+
+# for (ACCESS in 1:ncol(utility)) {
+#   for (YEAR in 1:n_years_tot) {
+#     # utility = cell x access x year
+#     # build_year = access x year
+#     # access_dist = cell x access    
+#     utility[, ACCESS, YEAR] <- (fishable_depth_cell_year[,YEAR] * build_year[ACCESS, YEAR] * travel_cost[, ACCESS, YEAR] + 1)
+#   }
+# }
+
+big_cost <- 1e6  # comfortably larger than any real travel_cost * build_year value
+
+for (ACCESS in 1:ncol(utility)) {
+  for (YEAR in 1:n_years_tot) {
+    base_cost <- build_year[ACCESS, YEAR] * travel_cost[, ACCESS, YEAR]
+    
+    utility[, ACCESS, YEAR] <- ifelse(
+      fishable_depth_cell_year[, YEAR] == 1,
+      base_cost + 1,
+      big_cost
+    )
+  }
+}
+utility[,1:20,100]
+utility[!is.finite(utility)] <- 0
+utility[is.na(utility)] <- 0
+
+
+## sanity check - is utility LOWER for areas close to access points but far from shore, THIS WILL MAKE SENSE WITH THE COEF FROM MATT'S PAPER)
+test_access = 10
+test_year = 1
+test <- water %>% dplyr::select(!where(is.list)) %>% mutate(test = log(utility[, test_access, test_year]))
+mapview::mapview(test, zcol = "test") + mapview::mapview(BR[test_access,])
+
+ggplot() +
+  geom_sf(data = water %>% dplyr::select(!where(is.list)) %>% mutate(test = utility[, test_access, 125]), 
+          aes(fill = (test)), 
+          col = NA) +
+  geom_sf(data = BR[test_access,] %>% st_set_crs(common_crs) %>% st_transform(st_crs(water)), col = "red") +
+  scale_fill_gradientn(colours = colour_palette[6:4])
+# ayoooo im a geniuuus
 
 
 # 4. set up fishing days values -----------------------------------------------
@@ -474,7 +497,7 @@ ggplot(data = water %>% mutate(test = test)) +
 
 ## 4.a. enter the overall effort values (boat days) ---------------------------
 
-g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_boat_days_total (19-01-2026).csv", skip = 1) %>% 
+g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
   dplyr::select(c(YEAR, boat.days.west.coast)) %>% # select only boat rec fishing columns.
   glimpse()
 
@@ -592,5 +615,42 @@ coef_values <- tibble(log_utility = -0.848,
 fishing_info_list <- list(catchability, utility, access_point_effort, cell_area_m2, coef_values)
 names(fishing_info_list) <- c("catchability", "utility", "fishing_days", "cell_area_m2", "coef_values")
 saveRDS(fishing_info_list, "data/output_data/04_C_boat_rec_fishing_info.rds")
+
+
+## 6. SETTING UP EFFORT FOR BURN IN -------------------------------------------
+
+# the burn-in exists only to stabilise the population before the simulations start.
+# to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
+
+# obtain the relative contribution of each boat ramp
+BR_1900 <- BR %>%
+  dplyr::filter(build_year == 1900) %>% 
+  dplyr::select(name) %>% 
+  glimpse()
+
+# calculate the low level of fishing
+eq.init.fish = 0.025 # this is the new level of fishing mortality, very low.
+q = 0.00001 # catchability, or the risk of a fish being caught
+effort = (-log(1-eq.init.fish))/q # this is the number of this fleet's fishing days in a year.
+
+
+# we then split this effort in every month
+seasonal_multipliers
+burn_in_effort <- seasonal_multipliers*effort
+
+burn_in_effort <- as.data.frame(burn_in_effort) %>%
+  mutate(!!!setNames(rep(list(0), length(BR$name)), BR$name)) %>% 
+  rename(effort = "burn_in_effort")
+
+
+## Split up by boat ramp
+for(ap in BR_1900$name){
+  burn_in_effort[ap] = burn_in_effort$effort / length(BR_1900$name)
+}
+
+burn_in <- as.matrix(burn_in_effort[-1])
+
+saveRDS(burn_in, file = "data/output_data/04_C_boat_rec_burn_in_effort.rds")
+# for the burn in, just replace the corresponding list object from section 5 with this one.
 
 ### END ###

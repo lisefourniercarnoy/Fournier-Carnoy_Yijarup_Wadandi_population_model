@@ -329,43 +329,36 @@ ggplot(data = water %>% mutate(test = test)) +
 
 ### 3.b.b calculate catchability ----------------------------------------------
 
-glimpse(water_area)
+# catchability is the % of the population being harvested by 1 unit effort.
+# it is unknowable, so we will need to calibrate it. 
+# see script 04_D for process 
+
+q <- readRDS("data/output_data/04_D_shore_rec_q.rds")$Q
 
 fishable_area <- water_area
+fishable_area_sum <- colSums(fishable_area)
+fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
+
+catchability <- array(0, dim = dim(fishable_area))
+for (y in 1:dim(fishable_area)[3]) {
+  for (m in 1:12) {
+    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
+  }
+}
+catchability[catchability == Inf] <- 0  # avoid division by zero
 
 ## sanity check station 
-test_year = 80
-test <- fishable_area[, 1, test_year]
-ggplot(data = water %>% mutate(test = test)) +
-  geom_sf(aes(fill = test), colour = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
-  theme_minimal()
-
-# now divide by the sum of fishable area.
-glimpse(fishable_area)
-fishable_area_sum <- colSums(fishable_area) # month x year matrix
-
-catchability <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
-dim(fishable_area)
-dim(fishable_area_sum)
-
-
-## sanity check station 
-test_year = 120
+test_year = 100
 test <- catchability[, 1, test_year]
-mapview::mapview(water %>% dplyr::select(!where(is.list)) %>% mutate(test = test), zcol = "test")
-
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
-  labs(y = "Fishable proportion", colour = "Cell ID") +
   theme_minimal()
 
 
 # 4. set up fishing days values -----------------------------------------------
 
-# we need to know how much fishing occurs in the region, so that the function knows how much to distribute.
+# we need to know how much fishing occurs in the region, sso that the function knows how much to distribute.
 # for commercial fishing, we are using a variety of sources to reconstruct the trends (a),
 # the sources are split between the Metropolitan area effort (North, 4.N) and the Southwest area effort (Wadandi, 4.W)
 # we will (b.) split the yearly effort into months, then (c.) split the monthly effort into access points (boat ramps).
@@ -374,7 +367,7 @@ ggplot(data = water %>% mutate(test = test)) +
 
 ## 4.a. enter the overall effort values (boat days) ---------------------------
 
-g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_boat_days_total (19-01-2026).csv", skip = 1) %>% 
+g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
   dplyr::select(c(YEAR, state.pop:last_col())) %>% #select only shore fishing columns.
   glimpse()
 
@@ -431,7 +424,7 @@ ggplot(shore_effort, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = m
   geom_smooth(color = colour_palette[5])
 
 
-## 4.c. distribute monthly effort into boat ramps -----------------------------
+## 4.c. distribute monthly effort into access points --------------------------
 
 # carparks
 AP_n <- st_read(file_carpark_n) %>% 
@@ -519,5 +512,60 @@ coef_values <- tibble(log_utility = 1,
 fishing_info_list <- list(catchability, utility, access_point_effort, cell_area_m2, coef_values)
 names(fishing_info_list) <- c("catchability", "utility", "fishing_days", "cell_area_m2", "coef_values")
 saveRDS(fishing_info_list, "data/output_data/04_B_shore_rec_fishing_info.rds")
+
+
+## 6. SETTING UP EFFORT FOR BURN IN -------------------------------------------
+
+# the burn-in exists only to stabilise the population before the simulations start.
+# to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
+
+# obtain the access points built in 1900
+AP_n <- st_read(file_carpark_n) %>% 
+  st_transform(common_crs) %>%
+  st_make_valid() %>%
+  mutate(build_mnth = 1, # assume Jan if unknown
+         id = 1:nrow(.),
+         name = paste0(rough_area, "_", id)
+         )
+
+AP_w <- st_read(file_carpark_w) %>% 
+  st_transform(common_crs) %>%
+  st_make_valid() %>%
+  mutate(build_mnth = 1, # assume Jan if unknown
+         #id = 1:nrow(.),
+         name = area
+  )
+
+AP_all <- rbind(AP_n %>% dplyr::select(name, year_start, build_mnth), AP_w %>% dplyr::select(name, year_start, build_mnth))
+
+AP_1900 <- AP_all %>% 
+  dplyr::filter(year_start == 1900,
+                build_mnth == 1)
+
+# calculate the low level of fishing
+eq.init.fish = 0.025 # this is the new level of fishing mortality, very low.
+q = 0.0000001 # catchability, or the risk of a fish being caught
+effort = (-log(1-eq.init.fish))/q # this is the number of this fleet's fishing days in a year.
+
+
+# we then split this effort in every month
+seasonal_multipliers
+burn_in_effort <- seasonal_multipliers*effort
+
+burn_in_effort <- as.data.frame(burn_in_effort) %>%
+  mutate(!!!setNames(rep(list(0), nrow(AP_all)), colnames(access_point_effort))) %>% 
+  rename(effort = "burn_in_effort")
+
+
+## split up by access point (the ones that are built only)
+for(ap in AP_1900$name) {
+  burn_in_effort[ap] = burn_in_effort$effort * (1/nrow(access_point_effort))
+}
+
+burn_in <- as.matrix(burn_in_effort[-1])
+
+saveRDS(burn_in, file = "data/output_data/04_B_shore_rec_burn_in_effort.rds")
+# for the burn in, just replace the corresponding list object from section 5 with this one.
+
 
 ### END ###
