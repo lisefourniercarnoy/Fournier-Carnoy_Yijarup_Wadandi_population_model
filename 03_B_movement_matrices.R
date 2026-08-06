@@ -258,8 +258,8 @@ glimpse(p_habitat)
 
 ## Save all the files you need to remake these matrices -----------------------
 
-# saveRDS(pDist, "data/output_data/03_B_pDist.rds")
-# saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
+saveRDS(pDist, "data/output_data/03_B_pDist.rds")
+saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
 
 
 ## Create adult movement probability using utility function -------------------
