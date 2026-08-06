@@ -21,13 +21,11 @@ library(sf) # for dealing with shapefiles
 library(terra) # for the bathy layer
 library(forcats)
 library(RColorBrewer)
-# library(MQMF)
 library(Rcpp) # to execute C++ functions
 library(RcppArmadillo) # to execute C++ functions
 library(gmailr) # to send emails via R
-library(abind)
-# library(beepr)
-# library(FishPopPackage)
+library(abind) # to del with cubes 
+
 
 
 ## Set up to send emails when finished running --------------------------------
@@ -91,25 +89,18 @@ brec_info$fishing_days[brec_info$fishing_days == 0] <- 1e-10 # replace zero with
 srec_info <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds") %>% glimpse()
 srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
 
-# add scaling for each fleet, to account for different gears being less efficient, compared to commercial. see g-sheets Fishing effort reconstruction
-brec_info$fishing_days <- brec_info$fishing_days * 0.1
-srec_info$fishing_days <- srec_info$fishing_days * 0.017
-
 fleet_info = list(com_info, 
                   brec_info,
                   srec_info
 )
 
-
 ## start the simulation -------------------------------------------------------
 
 RECONS_pop <- list() # keep record of the burn-in outputs
-RECONS_catch_weight <- list()
+RECONS_catch_weight <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); names(RECONS_catch_weight) <- fleet_names
 RECONS_catch_number <- list()
-RECONS_F   <- list()
 RECONS_SSB <- list()
-RECONS_catch_by_fleet <- list()
-
+RECONS_effort <- list()
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
@@ -139,18 +130,11 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
   
   # save the population at the end of the year (to give to the loop again as January population)
   current_pop <- ModelOutput$next_pop #  cell x length x age
-  fishing_mortality <- ModelOutput$fishing_mortalities
-  
   RECONS_pop[[YEAR+1]] <- current_pop # the format is (cell x length x age) x year
-  fishing_mortality  <- ModelOutput$fishing_mortalities
-  
-  RECONS_pop[[YEAR+1]] <- current_pop
-  RECONS_F[[YEAR+1]]   <- ModelOutput$annual_F          # cell x length
   RECONS_SSB[[YEAR+1]] <- ModelOutput$spawning_biomass  # cell, summed across spawning months
-  fleet_catch_this_year <- sapply(1:length(fleet_names), function(f) {
-    sum(ModelOutput$catch_weight_by_fleet[[f]])  # sum over all cells and ages
-  })
-  RECONS_catch_by_fleet[[YEAR+1]] <- fleet_catch_this_year
+  RECONS_catch_weight[YEAR+1,] <- sapply(ModelOutput$catch_weight_by_fleet, sum)
+  RECONS_catch_number[YEAR+1,] <- sapply(ModelOutput$catch_number_by_fleet, sum)
+  RECONS_effort[[YEAR+1]] <- ModelOutput$effort_by_fleet # array: cell x month x fleet
   
   # add a plot check, to avoid wasting time on running the function
   total_by_length_age <- apply(current_pop, c(2, 3), sum)
@@ -181,69 +165,51 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
 End = Sys.time()
 Runtime = End - Start
 Runtime
+    
 
-### simulated population stability over time ----------------------------------
-
-
-## a few sanity checks --------------------------------------------------------
-
-### burn-in population stability over time ------------------------------------
+### CHECK: population trends over time ----------------------------------------
 
 total_pop <- lapply(RECONS_pop, function(pop) sum(pop))
 par(mfrow = c(1,1))
 plot(1:max_year, total_pop, type = "l",
-     xlab = "Year", ylab = "Total abundance",
-     main = "total Population during reconstruction")
-# we are looking for a population that ends up being somewhat stable in the last few years of the burn in, with no huge dips of spikes.
+xlab = "Year", ylab = "Total abundance",
+main = "total Population during reconstruction")
 
 
-### finite f ------------------------------------------------------------------
-
-# finite fishing mortality (f) is the % of fish removed from the population over any time period.
-F_by_length_year <- sapply(RECONS_F, function(f) colMeans(f))  # n_lengths x n_years
-matplot(t(F_by_length_year), type = "l", lty = 1,
-        xlab = "Year", ylab = "Mean F (across cells)",
-        main = "Fishing mortality by length bin over time",
-        col = colorRampPalette(c(colour_palette[3], colour_palette[6]))(nrow(F_by_length_year)))
-
-legend("topright", legend = c("small fish", "large fish"), 
-       col = c(colour_palette[3], colour_palette[6]), lty = 1, title = "Length bin")
-# fishing mortality should be lower for small fish, and vice versa, and higher where there's loads of fishing and vice versa
-
-
-### age and length structure in the last time step ----------------------------
+### CHECK: age and length structure in the last time step ---------------------
 
 total_by_length_age <- apply(current_pop, c(2,3), sum)
-
 age_structure <- colSums(total_by_length_age)
 size_structure <- rowSums(total_by_length_age)
 
 par(mfrow = c(1, 2))
 plot(age_structure, type = "l", xlab = "Age", ylab = "Total abundance",
-     main = "Age structure")
+main = "Age structure")
 plot(size_structure, type = "l", xlab = "Length bin", ylab = "Total abundance",
-     main = "Size structure")
+main = "Size structure")
 
 
-### spawning biomass ----------------------------------------------------------
+### CHECK: spawning biomass ---------------------------------------------------
 
+SSB0 <- readRDS("data/output_data/06_burn_in_SSB0.rds")
 SSB_timeseries <- sapply(RECONS_SSB, sum)  # sum over cells, one value per year
+B_rel <- SSB_timeseries / SSB0
 par(mfrow = c(1, 1))
-plot(SSB_timeseries, type = "l", lwd = 2, col = colour_palette[6],
-     xlab = "Year", ylab = "Total SSB",
-     main = "Effective reproductive output")
-
+plot(B_rel[75:125], type = "l", lwd = 2, col = colour_palette[6],
+xlab = "Year", ylab = "SSB relative to 1900",
+main = "Effective reproductive output")
+# here we are checking whether the relative SSB (this year's SSB/SSB0) matches the stock assessment.
 
 ### fish density --------------------------------------------------------------
 
 water <- readRDS("data/output_data/02_watergrid.rds")
-
 ages_to_plot <- c(1, 5, 10, 20, 30, 40)
+year_to_plot <- 120
 age_df <- lapply(ages_to_plot, function(a) {
-  cell_totals <- apply(RECONS_pop[[60]][,, a], 1, sum)
-  water$fish <- cell_totals
-  water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
-  water
+cell_totals <- apply(RECONS_pop[[year_to_plot]][,, a], 1, sum)
+water$fish <- cell_totals
+water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
+water
 }) %>% bind_rows()
 
 ggplot(age_df) +
@@ -251,175 +217,89 @@ ggplot(age_df) +
   scale_fill_viridis_c(name = "Fish") +
   facet_wrap(~ age, nrow = 1) +
   theme_void() +
-  ggtitle("Fish distribution by age (year 60)")
+  ggtitle(paste0("Fish distribution by age (year ", year_to_plot, ")"))
 
 
 ### relative catch of fleets --------------------------------------------------
 
-catch_df <- do.call(rbind, lapply(seq_along(RECONS_catch_by_fleet), function(yr) {
-  data.frame(
-    year  = 1900 + yr,
-    fleet = fleet_names,
-    catch_kg = RECONS_catch_by_fleet[[yr]]
-  )
-}))
-
-ggplot(catch_df, aes(x = year, y = catch_kg, colour = fleet)) +
-  geom_line(lwd = 1) +
+yearly_catch <- as.data.frame(RECONS_catch_weight)
+names(yearly_catch) <- fleet_names
+ggplot(yearly_catch[75:124,]) +
+  geom_line(lwd = 1, aes(x = 75:124, y = commercial), colour = "red") +
+  geom_line(lwd = 1, aes(x = 75:124, y = boat_rec), colour = "blue") +
+  geom_line(lwd = 1, aes(x = 75:124, y = shore_rec), colour = "green") +
   labs(x = "Year", y = "Catch (kg)", title = "Annual catch by fleet") +
   theme_bw()
 
-## ### BELOW IS ARCHIVE BUT KEEPING IN CASE THE STRUCTURE IS DIFFERNET FROM BURN IN ####
-## Set up initial population --------------------------------------------------
 
-# We need to create loads of objects to save different elements of the model output:
-sim_n <- 1 # number of simulations to run - for now it's just 1 but eventually it'll be more
+### fishing mortality ---------------------------------------------------------
 
-# population information
-pop_total       <- array(0, dim = c(max_cell, 12, max_year)) # number of fish of all ages in our population, in each cell (row), each month (column) and each year simulated (matrix slice)
-total           <- array(NA, dim = c(max_year, 1)) # for plotting purposes, population summed for each year
-pop_total_dist  <- array(0, dim = c(max_cell, max_year)) #???
+total_pop <- lapply(RECONS_pop, function(pop) sum(pop[,,5:40]))
+yearly_catch <- as.data.frame(RECONS_catch_number)
+names(yearly_catch) <- fleet_names
 
-# catch information
-age_catch       <- array(0, dim = c(12, max_age, max_year))
-catch_by_cell   <- array(0, dim = c(max_cell, max_year))
-catch_by_age    <- array(0, dim = (c(max_age, max_year)))
-catch_by_weight <- array(0, dim = (c(max_cell, max_year)))
+yearly_catch[,1] <- yearly_catch[,1] / unlist(total_pop)
+yearly_catch[,2] <- yearly_catch[,2] / unlist(total_pop)
+yearly_catch[,3] <- yearly_catch[,3] / unlist(total_pop)
 
-## Save all information by simulation
-sim_pop   <- array(0, dim = c(max_year, sim_n))
-sim_ages  <- array(0, dim = c(max_age, max_year, sim_n))
-
-sp_pop_f <- array(0, dim = c(length(shallow_fished_id), max_age, max_year))
-sp_pop_ntz <- array(0, dim = c(length(shallow_ntz_id), max_age, max_year))
+par(mfrow = c(1,1))
+ggplot(yearly_catch[75:124,]) +
+  geom_line(lwd = 1, aes(x = 75:124, y = commercial), colour = "red") +
+  geom_line(lwd = 1, aes(x = 75:124, y = boat_rec), colour = "blue") +
+  geom_line(lwd = 1, aes(x = 75:124, y = shore_rec), colour = "green") +
+  labs(x = "Year", y = "Catch %", title = "Annual catch by fleet") +
+  theme_bw()
 
 
-## Run model simulations ------------------------------------------------------
 
-start = Sys.time()
-for (SIM in 1:sim_n){ # Simulation loop - CHARLOTTE HAD 100, I'M STARTING WITH 10
 
-  ## Set up initial population ------------------------------------------------
-  pop_total       <- array(0, dim = c(max_cell, 12, max_year)) # number of fish of all ages in our population, in each cell (row), each month (column) and each year simulated (matrix slice)
-  total           <- array(NA, dim = c(max_year, 1)) # for plotting purposes, population summed for each year
-  
-  print(paste0("Simulation number ", SIM)) # progress update
-  
-  yearly_total <- readRDS("data/output_data/06_RECONS__population.rds")
-  
-  for (YEAR in 14:(max_year-1)){ # Start of model year loop.
-    
-    print(paste0("Year ", YEAR))
-    
-    ### Loop over all the Rcpp functions in the model -------------------------
-    
-    ModelOutput <- RunModelfunc_cpp(YEAR = YEAR,                                   
-                                    MaxCell = max_cell,
-                                    MaxYear = max_year, 
-                                    
-                                    MaxAge = max_age, 
-                                    NatMort = nat_mort, 
-                                    BHa = BHa, 
-                                    BHb = BHb, 
-                                    PF = PF, 
-                                    AdultMove = adult_movement, 
-                                    Mature = maturity,
-                                    ha_scaling = hyperallo,
-                                    Weight = weight, 
-                                    Settlement = settlement, 
-                                    
-                                    YearlyTotal = yearly_total, 
-                                    
-                                    Selectivity_com = selectivity_com, 
-                                    Selectivity_b_rec = selectivity_b_rec, 
-                                    Selectivity_s_rec = selectivity_s_rec, 
-                                    
-                                    Effort_com = effort_com, # commercial effort of the simulation
-                                    Effort_b_rec = effort_b_rec, # boat rec effort of the simulation
-                                    Effort_s_rec = effort_s_rec # shore rec effort of the simulation
-    )
-    print("model success")
+full_years <- 1975:2024
+F_ss <- read.csv("data/input_data/digitised_plots_for_checking/F_digitised_from_stock_assessment.csv") %>%
+  glimpse()
+F_ss <- data.frame(
+  x = full_years,
+  y = approx(x = F_ss$x, y = F_ss$y, xout = full_years)$y
+)
 
-    ### Get outputs from the model --------------------------------------------
-    
-    # Have to add 1 to all YEAR because the loop is now starting at 0
-    
-    # Abundance in different areas
-    pop_total[ , , YEAR+1] <- rowSums(ModelOutput$YearlyTotal[, , 1:max_age], dim = 2) # This flattens the matrix to give you the number of fish present in the population each month in each cell, with layers representing the year
+test <- yearly_catch[74:124,]
 
-    # Whole area
-    water$pop <- pop_total[ , 12, YEAR+1] # We just want the population at the end of the year
-    total[YEAR+1, 1] <- sum(water$pop) # Add this to a dataframe we can then use later
+F_all <- (test$commercial + test$shore_rec + test$boat_rec)
+plot(x = F_ss$x, F_ss$y, lwd = 2, col = "steelblue", type = "l")
+lines(x = 1975:2025, y = F_all, col = "firebrick", lwd = 2)
 
-    # By zone
-    sp_pop_f[, , YEAR+1] <- ModelOutput$YearlyTotal[c(shallow_fished_id), 12, ] # Saving the population at the end of the year in cells <30m depth for plots
-    sp_pop_ntz[, , YEAR+1] <- ModelOutput$YearlyTotal[c(shallow_ntz_id), 12, ] # Saving the population at the end of the year in cells <30m depth for plots
 
-    # By cell so we can get distances to boat ramps
-    pop_total_dist[ , YEAR+1] <- pop_total[, 12, YEAR+1]
 
-    # Catch data
-    monthly_catch               <- ModelOutput$month_catch
-    age_catch[,,YEAR+1]         <- colSums(ModelOutput$month_catch) #This is the number of fish in each age class caught in each month
 
-    catch_by_cell[, YEAR+1]     <- rowSums(monthly_catch[, , 3:max_age], dims = 1) # Number of legal size fish caught in each cell (age 3+)
-    catch_by_age[, YEAR+1]      <- colSums(age_catch[, , YEAR+1]) # number of fish caught at by the end of the year in each age class
+### CHECK: effort distribution ------------------------------------------------
 
-    monthly_catch_weight        <- ModelOutput$month_catch_weight
-    catch_by_weight[ , YEAR+1]  <- rowSums(monthly_catch_weight[,,3:max_age], dims = 1)
+water <- readRDS("data/output_data/02_watergrid.rds")
+year_to_plot = 124
+water_effort <- water %>%
+  mutate(
+    commercial = RECONS_effort[[year_to_plot]][, 12, 1],
+    boat_rec   = RECONS_effort[[year_to_plot]][, 12, 2],
+    shore_rec  = RECONS_effort[[year_to_plot]][, 12, 3]
+  ) %>%
+  pivot_longer(
+    cols = c(commercial, boat_rec, shore_rec),
+    names_to = "fleet",
+    values_to = "effort"
+  )
 
-    sim_pop[YEAR+1, SIM]        <- total[YEAR+1, 1]
-    sim_ages[ , YEAR+1, SIM]    <- colSums(ModelOutput$YearlyTotal[, 12, 1:max_age]) # number of fish present in age age group at the end of the year
-  } # this loop runs the population model for every year, obtaining a simulated population over 20 or 30 years 
+# ggplot(water_effort) +
+#   geom_sf(aes(fill = effort), color = NA) +
+#   scale_fill_viridis_c(name = "Effort") +
+#   facet_wrap(~ fleet, nrow = 1) +
+#   theme_void() +
+#   ggtitle("Fishing effort by fleet (ultimate year, Month 12)")
 
-  ## Population in different zones
-  SIM_sp_f[[SIM]] <- sp_pop_f
-  SIM_sp_ntz[[SIM]] <- sp_pop_ntz
-  SIM_n_dist[[SIM]] <- pop_total_dist
 
-  ## Catches
-  SIM_n_catches[[SIM]] <- catch_by_cell # Catches in each cell
-  SIM_age_catches[[SIM]] <- catch_by_age # Catches by age in each month of the year in each year
-  SIM_weight_catches[[SIM]] <- catch_by_weight
+plot_data <- water_effort[water_effort$fleet == "commercial", c("effort")] # keeps geometry automatically
 
-  ## Save the last simulation? ------------------------------------------------
+mapview::mapview(plot_data,
+                 zcol = "effort",
+                 #col.regions = viridisLite::viridis(100),
+                 layer.name = "Effort")
 
-  if(SIM == sim_n){ # Saving if statement
-    #print(Movement_Speed)
-    print(scenario)
-
-    ### Population ------------------------------------------------------------
-    
-    # Total population
-    saveRDS(sim_pop, file = paste0("simulations/dummy_run/", scenario, "_total_population_try1.rds"))
-
-    # Numbers of each age that make it to the end of each year
-    saveRDS(sim_ages, file = paste0("simulations/dummy_run/", scenario, "_age_distribution_try1.rds"))
-    saveRDS(SIM_sp_ntz, file = paste0("simulations/dummy_run/", scenario, "_sp_population_ntz_try1.rds")) # Numbers of fish of each age, inside sanctuary zones
-    saveRDS(SIM_sp_f, file = paste0("simulations/dummy_run/", scenario, "_sp_population_fished_try1.rds")) # Numbers of fish of each age, outside sanctuary zones
-    saveRDS(SIM_n_dist, file = paste0("simulations/dummy_run/", scenario, "_cell_population_try1.rds")) # Number of fish in each cell at the end of each year
-
-    ### Catches ---------------------------------------------------------------
-
-    saveRDS(SIM_age_catches, file = paste0("simulations/dummy_run/", scenario, "_catch_by_age_baranov_try1.rds")) # Catch in each year by age
-    saveRDS(SIM_n_catches, file = paste0("simulations/dummy_run/", scenario, "_catch_by_cell_baranov_try1.rds")) # catch in each cell across the year
-    saveRDS(SIM_weight_catches, file = paste0("simulations/dummy_run/", scenario, "_catch_by_weight_try1.rds")) # Catch in each cell by weight across the year
-
-  } else { } # End saving if statement
-
-} # this loop makes new simulations using the selected scenario
-
-end = Sys.time() 
-runtime = end - start
-runtime
-
-finished_email <- gm_mime() %>%
-  gm_to("lise.fourniercarnoy@research.uwa.edu.au") %>%
-  gm_from("lise.fourniercarnoy@marineecology.io") %>%
-  gm_subject("Model code is done running") %>%
-  gm_text_body(paste("Feckin finally! This run took ", runtime, "minutes."))
-
-d <- gm_create_draft(finished_email)
-gm_send_draft(d)
 
 ### END ###
