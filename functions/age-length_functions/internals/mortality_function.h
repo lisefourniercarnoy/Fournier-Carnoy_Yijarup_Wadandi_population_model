@@ -15,42 +15,39 @@ Rcpp::List mortality_function(
 ) {
   
   // constants for this age-month-year
-  const double natural_m  = natural_mortality / 12;
-  int n_fleets            = fleet_fishing_effort.size(); // number of fleets from effort list
-  
-  
+  const double natural_m = natural_mortality / 12;
+  int n_fleets = fleet_fishing_effort.size(); // number of fleets from effort list
+ 
   // 1. calculate the fishing mortality of each fleet
   arma::mat total_f(max_cell, n_lengths, arma::fill::zeros); // cell x lengths
   arma::cube fleet_f(max_cell, n_lengths, n_fleets); // cell x lengths
   
   for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
-    
-    arma::vec effort_f    = Rcpp::as<arma::vec>(fleet_fishing_effort[FLEET]);
-    
+
+    arma::vec effort_f = Rcpp::as<arma::vec>(fleet_fishing_effort[FLEET]);
     arma::vec catchability_now = catchability_by_fleet[FLEET].col(MONTH);
-    
-    arma::mat F           = (effort_f % catchability_now) * sel_this_year.t(); // instantaneous fishing mortality(AGE) = fishing effort(cells) * catchability(cells) * selectivity(all lengths)
-    fleet_f.slice(FLEET)  = F;
+    arma::mat F = (effort_f % catchability_now) * sel_this_year.t(); // instantaneous fishing mortality(AGE) = fishing effort(cells) * catchability(cells) * selectivity(all lengths)
+    fleet_f.slice(FLEET) = F;
     total_f += F;  // accumulate total F, as in https://academic.oup.com/icesjms/article/78/6/2043/6317566 -- sum of all fleets' fishing mortalities.
     
   }
 
   // 2. calculate total survived fish (not fleet-specific)
-  arma::mat Z             = total_f + natural_m;
+  arma::mat Z = total_f + natural_m;
   Z.replace(0, 1e-10); // prevent division by zero
-  arma::mat tot_survived  = current_pop_AGE % arma::exp(-Z); 
-  
-  
+  arma::mat tot_survived = current_pop_AGE % arma::exp(-Z); 
+
   // 3. calculate fleet-specific Baranov catch
   Rcpp::List catch_weight_by_fleet(n_fleets); // this is fully age-length structured because we want to know what sizes we're catching
   Rcpp::List catch_numbers_by_fleet(n_fleets); // this is summed across all ages and lengths, to distribute effort next month.
   
   for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
     // each fleet's share of catch via Baranov, using total Z in denominator
-    arma::mat fleet_catch           = current_pop_AGE % (fleet_f.slice(FLEET) / Z) % (1 - arma::exp(-Z)); // Baranov catch equation, results in a cell x lengths
-    arma::vec fleet_catch_weight    = fleet_catch * weight;
-    catch_numbers_by_fleet[FLEET]   = fleet_catch;
-    catch_weight_by_fleet[FLEET]    = fleet_catch_weight;
+    arma::mat fleet_catch = current_pop_AGE % (fleet_f.slice(FLEET) / Z) % (1 - arma::exp(-Z)); // Baranov catch equation, results in a cell x lengths
+    arma::vec fleet_catch_weight = fleet_catch * weight;
+    catch_numbers_by_fleet[FLEET] = fleet_catch;
+    catch_weight_by_fleet[FLEET] = fleet_catch_weight;
+   
   }
 
   return Rcpp::List::create(

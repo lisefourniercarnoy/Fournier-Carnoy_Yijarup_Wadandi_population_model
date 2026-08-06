@@ -6,8 +6,7 @@ Rcpp::List distribute_effort_function(
     // parameters for the expected catch function
     const int max_cell,
     Rcpp::List expected_catch, // list of size n_fleets, with vectors of size n_cell
-    Rcpp::List expected_catch_sq, // list of size n_fleets, with vectors of size n_cell
-    
+
     // fleets
     Rcpp::CharacterVector fleet_names, // c("commercial", "boat_rec", "shore_rec")
     Rcpp::List fleet_info // a list with objects of different shapes that contain information relevant to the distribution of each fleet.
@@ -33,45 +32,43 @@ Rcpp::List distribute_effort_function(
     Rcpp::List current_fleet = fleet_info[i]; // extract information for the current fleet
     
     // 1. calculate expected catch 
-    arma::vec catchability_now  = Rcpp::as<arma::cube>(current_fleet["catchability"]).slice(YEAR).col(MONTH);
-    arma::vec expected_catch_2    = Rcpp::as<arma::vec>(expected_catch[i]) % catchability_now;  // extract ONCE here
-    arma::vec expected_catch_sq_2 = arma::pow(expected_catch_2, 2);                             // derive sq from ec
-    final_expected_catch[i]     = expected_catch_2;
+    arma::vec expected_catch_2 = Rcpp::as<arma::vec>(expected_catch[i]);
+    arma::vec expected_catch_sq_2 = arma::pow(expected_catch_2, 2); // derive sq from expected catch
+    final_expected_catch[i] = expected_catch_2;
 
     // 2. obtain cell utility (different fleets might use cells differently so has to be calculated exogenously
-    arma::cube cell_utility       = Rcpp::as<arma::cube>(current_fleet["utility"]); // (cell x access_point x years)
-    arma::mat cell_utility_now    = cell_utility.slice(YEAR); // (cell x access_point)
-    
-    arma::vec cell_area           = Rcpp::as<arma::vec>(current_fleet["cell_area_m2"]); // (vec of length n_cell)
-
+    Rcpp::List cell_attractivity_by_month = Rcpp::as<Rcpp::List>(current_fleet["attractivity"]); // list of 12 cubes (cell x access_point x years)
+    arma::cube cell_attractivity = Rcpp::as<arma::cube>(cell_attractivity_by_month[MONTH]);      // pick the month's cube
+    arma::mat cell_attractivity_now = cell_attractivity.slice(YEAR); 
     
     // calculate the coefficients for every access_point
-    const int n_access_points = cell_utility_now.n_cols;
+    const int n_access_points = cell_attractivity_now.n_cols;
     Rcpp::DataFrame coef_values   = Rcpp::as<Rcpp::DataFrame>(current_fleet["coef_values"]); // coefficients from matt's paper
     
     arma::mat utility_calc(max_cell, n_access_points); // announce new matrix (cell x access_point)
-    for(int access_point = 0; access_point < n_access_points; access_point++) {
+    
+    for (int access_point = 0; access_point < n_access_points; access_point++) {
       
-      // 2.A. figure out coefficients
+      // 2.A. find fishable cells
+      arma::vec attractivity_now_vec = cell_attractivity_now.col(access_point);
+      arma::uvec fishable_mask = arma::find_finite(attractivity_now_vec);
       
-      arma::vec util_now_vec = cell_utility_now.col(access_point);
-      util_now_vec.replace(0, 1e-10); // replace zeros before log
+      // 2.B. figure out coefficients
+      arma::vec cell_coefficent_here_now(max_cell, arma::fill::value(-1e10)); // default: unfishable
+      cell_coefficent_here_now.elem(fishable_mask) = // Charlotte's CellCoef
+        attractivity_now_vec.elem(fishable_mask) +
+        expected_catch_2.elem(fishable_mask) * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch"])[0] + // here we're only usinng fishable cells
+        expected_catch_sq_2.elem(fishable_mask) * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch_sq"])[0]; // here we're only usinng fishable cells
       
-      arma::vec cell_coefficent_here_now = // Charlotte's CellCoef
-        arma::log(util_now_vec)            * Rcpp::as<Rcpp::NumericVector>(coef_values["log_utility"])[0] +
-        expected_catch_2                   * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch"])[0] +
-        expected_catch_sq_2                * Rcpp::as<Rcpp::NumericVector>(coef_values["expected_catch_sq"])[0] + 
-        arma::log(cell_area)               * Rcpp::as<Rcpp::NumericVector>(coef_values["log_cell_area"])[0];
-      
-      // 2.B. calculate cell utility
-      double max_coef = cell_coefficent_here_now.max(); // centering the coefficients to prevent division by zero ??
+      // 2.C. calculate cell utility
+      double max_coef = cell_coefficent_here_now.max();
       arma::vec cell_utility_here_now = arma::exp(cell_coefficent_here_now - max_coef);
       double utility_sum = arma::sum(cell_utility_here_now);
-      utility_calc.col(access_point) = (utility_sum > 0) 
-        ? cell_utility_here_now / utility_sum 
+      utility_calc.col(access_point) = (utility_sum > 0)
+        ? cell_utility_here_now / utility_sum
       : arma::vec(max_cell, arma::fill::value(1.0 / max_cell));
       
-    }
+      }
     
     // 3. distribute effort
     arma::cube fishing_days         = Rcpp::as<arma::cube>(current_fleet["fishing_days"]); // (month x access_point x years)

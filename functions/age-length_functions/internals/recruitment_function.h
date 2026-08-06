@@ -27,8 +27,8 @@ Rcpp::List recruitment_function(
   double tot_recs_before_var = total_female_SB / (BHa + BHb * total_female_SB);
   
   // we want to add variability in the recruitment. see equation 1 in Methot & Taylor 2011
-  double sigma = 0.6; 
-  double tot_recs_after_var = tot_recs_before_var * exp(R::rnorm(0, sigma) - ((sigma*sigma)/2)); // centered on zero. 
+  //double sigma = 0.6; 
+  double tot_recs_after_var = tot_recs_before_var; //* exp(R::rnorm(0, sigma) - ((sigma*sigma)/2)); // centered on zero. 
   
   arma::vec settle_recs = settlement * tot_recs_after_var;
 
