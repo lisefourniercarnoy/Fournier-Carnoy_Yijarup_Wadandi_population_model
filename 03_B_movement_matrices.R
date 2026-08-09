@@ -471,7 +471,7 @@ recruitment <- as.vector(recruitment[,1])
 # but recruitment probability is different from batch fecundity i think so skipping that for now.
 
 
-## Recruit movement - NOT MODDED FOR HAB_AFF_DIFF -----------------------------
+## Recruit movement -----------------------------------------------------------
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
@@ -501,23 +501,43 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 ## Small movement Swim Speed = 2.5 95% within approx 10km 
 ## Medium movement Swim Speed = 5 95% within approx 25km
 ## Big movement Swim Speed = 10 95% within approx 45km 
-swim_speed_juv <- 5
+swim_speed_juv <- 10
 a = -(1/swim_speed_juv)
 
 
-juv_hab_attractivity <- (a * pDist) + hab_aff^2 # not exponentiating the hab_aff prediction because it inflates values unnecessarily.
-glimpse(juv_hab_attractivity)
+# difference in habitat affinity from one cell to all others
+hab_aff_diff <- matrix(0,nrow = NCELL, ncol = NCELL)
+for (i in 1:NCELL) {
+  for (j in 1:NCELL) {
+    
+    from_aff <- hab_aff[i]
+    to_aff <- hab_aff[j]
+    
+    hab_aff_diff[i,j] <- to_aff - from_aff
+  }
+} # this loop calculates the difference in habitat affinity between cells.
+
+# from this we can determine the utility of each of the cells.
+# This is very sensitive to changes in the habitat values.
+juv_hab_attractivity <- hab_aff_diff + (a*pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
 
 # Calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-cell_utility <- exp(adult_hab_attractivity) * matrix(cell_area_km2, 
-                                                     nrow = NCELL, 
-                                                     ncol = NCELL, 
-                                                     byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km², add a constant
+
+# difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
+# logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
+cell_area_km2 <- log(water$cell_area) 
+cell_utility <- exp(juv_hab_attractivity) * matrix(cell_area_km2, 
+                                                   nrow = NCELL, 
+                                                   ncol = NCELL, 
+                                                   byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
+
 rowU <- as.data.frame(rowSums(cell_utility))
+summary(rowU)
 
 # quick plot check (looks good)
 water_2 <- water
@@ -528,21 +548,26 @@ ggplot() +
   scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
   theme_void()
 
+water_2 <- water
+water_2$test <- cell_utility[100,]
+summary(water_2$test)
+ggplot() +
+  geom_sf(data = water_2, aes(fill = (test)), color = NA, lwd = 0) +
+  scale_fill_gradient(low = "#EAD1DC", high = "#B95F89") +
+  theme_void()
+
 
 # Calculate the probability that the fish will move to this site
+juv_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
+juv_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
+rowSums(juv_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
+sum(is.na(juv_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
 
-juv_cell_movement_probability <- matrix(NA, ncol=NCELL, nrow=NCELL)
 
-for (r in 1:NCELL){
-  for (c in 1:NCELL){
-    juv_cell_movement_probability[r,c] <- (exp(juv_hab_attractivity[r,c]))/rowU[r,1]
-  }
-}
-rowSums(juv_cell_movement_probability) # should be all 1, because the probability of moving to any other cell (all rows) is 1.
-
+# We'll look at whether the movement makes sense.
 num_samples <- 3  # Number of cells to visualize
 plot_list <- list()  # Store all plots here
-set.seed(1)
+
 for (i in 1:num_samples) {
   random_point <- sample(1:NCELL, 1)  # Pick a random cell
   movement <- juv_cell_movement_probability[random_point, ]
@@ -582,6 +607,7 @@ for (i in 1:num_samples) {
 
 # Plot all in a 2-row, 3-column layout (fits 6 plots, 3 pairs)
 do.call(grid.arrange, c(plot_list, ncol = 2, nrow = 3))
+
 
 
 ## Save files for next step ---------------------------------------------------
