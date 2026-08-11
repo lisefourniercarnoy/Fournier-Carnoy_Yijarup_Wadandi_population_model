@@ -1,18 +1,18 @@
 # -----------------------------------------------------------------------------
 
 # Project: Wadandi Pink Snapper Population Model
-# Data:    Claude's SW habitat predictions
+# Data:    Script 01_A, SW habitat predictions
 # Task:    Create a shapefile with grid cells
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    November 2025
+# Date:    August 2026
 
 # -----------------------------------------------------------------------------
 
-# Status: Latest run: 22/01/2026
+# Status: Latest run: 11/08/2026
 
 # -----------------------------------------------------------------------------
 
-rm(list = ls()) # Clear working environment
+rm(list = ls()) # clear working environment
 
 colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
 
@@ -26,16 +26,17 @@ library(raster) # for manipulating rasters
 library(RColorBrewer) # for colours on plots
 
 
-## Files used in this script --------------------------------------------------
+## 0. Files used in this script -----------------------------------------------
 
 file_land         <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 file_MPA          <- "data/input_data/western-australia_marine-parks-all.shp"
 file_MPA_fixed    <- "data/output_data/Q_NTZ_manual_clean_01_B.shp"
-file_habitats     <- "data/input_data/wadandi_predicted_habitat.RDS" # Claude's SWC habitat predictions
+file_habitats     <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
 file_shore_hab    <- "data/output_data/Q_manual_shoreline_habitat.shp" # manually categorised shore habitat
 file_bathy        <- "data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
 
-## Set the extent -------------------------------------------------------------
+
+## 1. Set the extent ----------------------------------------------------------
 
 common_crs = 7850 # Using GDA2020 / MGA Zone 50, suitable for WA. projection in metres to allow buffer distance to be calculated.
 
@@ -51,7 +52,8 @@ bbox_whole <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -31), 
   st_as_sfc() %>%
   st_transform(common_crs)
 
-## Map of WA coastline --------------------------------------------------------
+
+## 2. Map of WA coastline -----------------------------------------------------
 
 wa_map <- st_read(file_land) %>% # takes up to 30 sec. because very detailed file
   st_transform(common_crs) %>% 
@@ -64,7 +66,7 @@ wa_map <- wa_map[!st_is_empty(wa_map),]
 st_write(wa_map, "data/output_data/01_B_land.shp", append = F)
 
 
-## Map of the State + Commonwealth Marine Park --------------------------------
+## 3. Map of the State + Commonwealth Marine Park -----------------------------
 
 MP <- st_read(file_MPA) %>%
   st_transform(common_crs) %>%
@@ -76,15 +78,15 @@ MP <- st_read(file_MPA) %>%
                      "Recreational Use Zone"
                      )
          )
-# zone names in the dataframe above are inconsistent, and some zones are open to some fleets but some others. 
-# you will need to manually tick which polygons are open to fishing and which aren't
+# -- zone names in the dataframe above are inconsistent, and some zones are open to some fleets but some others. 
+# -- you will need to manually tick which polygons are open to fishing and which aren't
 write.csv(MP %>% st_drop_geometry(), "data/output_data/01_B_region_MPAs_to_classify.csv")
 
 MP <- tibble::rowid_to_column(MP, "X")
 
 MP_permissions <- read.csv("data/input_data/YIJARUP - zoning fishing permissions - Sheet1.csv") %>% 
   glimpse()
-# here, i have every zoning polygon, and whether it's fishable to each fleet or not.
+# -- here, i have every zoning polygon, and whether it's fishable to each fleet or not.
 MP <- MP %>%
   left_join(MP_permissions %>% dplyr::select(X, commercial, boat_rec, shore_rec, source), by = "X")
 plot(MP[,c("commercial", "boat_rec", "shore_rec")])
@@ -98,27 +100,26 @@ NTZ <- MP %>%
   st_crop(bbox_whole)
 plot(NTZ$geometry)
 
-# Save the No-Take Zones layer
+# save the No-Take Zones layer
 plot(NTZ$geometry, col = colour_palette[4]); plot(wa_map$geometry, col = "#eeeeeeff", add = T)
 st_write(NTZ, "data/output_data/01_B_NTZ_to_clean.shp", delete_layer = T)
-
 
 # after manual fix (in QGIS, with 'Vector Overlay > Difference' with the 01_X_wadandi_NTZ_manually_modified_to_reach_land.shp)
 NTZ_clean <- st_read(file_MPA_fixed); plot(NTZ_clean$geometry)
 
 
-### Habitat Files - RUN AGAIN IF THINGS CHANGE --------------------------------
+## 4. Habitat Files -----------------------------------------------------------
 
-sand <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["psand.fit"]]
-reef <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["preef.fit"]]
-seagrass <- readRDS("data/output_data/01_A_bathymetry_habitat_rasters.rds")[["pseagrass.fit"]]
+sand <- readRDS(file_habitats)[["psand.fit"]]
+reef <- readRDS(file_habitats)[["preef.fit"]]
+seagrass <- readRDS(file_habitats)[["pseagrass.fit"]]
 
 hab <- c(reef, sand, seagrass)
 hab <- project(hab, crs(wa_map))
 hab <- mask(hab, wa_map, inverse = TRUE); names(hab) <- c("reef", "sand", "seagrass")
 plot(hab)
 
-#  Crop the raster
+# crop the raster
 bbox_sf <- st_transform(bbox_whole, crs(hab))
 bbox_vect <- vect(bbox_sf)
 cropped_ras <- crop(hab, bbox_vect)
@@ -129,13 +130,14 @@ hab_polygon <- st_as_sf(as.polygons(app(cropped_ras[[1]], fun = function(x) ifel
   st_transform(common_crs); plot(hab_polygon, col = NA, border = "red")
 
 
-## Create files to fill shore habitat in QGIS ---------------------------------
+## 5. Create files to fill shore habitat in QGIS ------------------------------
 
-# The habitat predictions above don't reach the shore.
-# Bathymetry files never reach the shore so no models can be fitted on this area.
-# I'll export the strip between shore and habitat predictions to manually fill in QGIS
-# I'm using the categorisation beach/rocky, as in the management plan, page 46, available here: https://www.dbca.wa.gov.au/management/plans/ngari-capes-marine-park
+# -- The habitat predictions above don't reach the shore.
+# -- Bathymetry files never reach the shore so no models can be fitted on this area.
+# -- I'll export the strip between shore and habitat predictions to manually fill in QGIS
+# -- I'm using the categorisation beach/rocky, as in the management plan, page 46, available here: https://www.dbca.wa.gov.au/management/plans/ngari-capes-marine-park
 
+# # this is hashed-out, because it only needs to be done once.
 # plot(wa_map$geometry)
 # plot(hab_polygon$geometry)
 # 
@@ -155,6 +157,7 @@ mapview::mapview(shore_hab)
 wa_map_union <- st_union(wa_map)
 shore_hab <- st_difference(shore_hab, wa_map_union) %>% st_transform(st_crs(hab)) # crop out the areas that are too high res.
 plot(shore_hab)
+
 # merge predicted habitat to the shore habitat
 
 # sand
@@ -188,21 +191,21 @@ mapview::mapview(hab_raster, maxpixels = 2677296)
 saveRDS(hab_raster, "data/output_data/01_B_full_habitat_raster.rds")
 
 
-## Make grid cells ------------------------------------------------------------
+## 6. Make grid cells ---------------------------------------------------------
 
 # make a polygon to use to make grids
 # hab_polygon <- st_as_sf(as.polygons(app(hab_raster[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
 #   st_transform(common_crs); plot(hab_polygon, col = NA, border = "red", lwd = 2)
 
-bathy <- rast("data/input_data/AusBathyTopo__Australia__2024_250m_MSL_cog.tif") %>% crop(st_transform(bbox_whole, 4326)); plot(bathy)
+bathy <- rast(file_bathy) %>% crop(st_transform(bbox_whole, 4326)); plot(bathy)
 bathy <- ifel(bathy$AusBathyTopo__Australia__2024_250m_MSL_cog < -200, NA, bathy$AusBathyTopo__Australia__2024_250m_MSL_cog); plot(bathy)
 temp <- st_as_sf(as.polygons(app(bathy[[1]], fun = function(x) ifelse(is.na(x), NA, 1)), dissolve = TRUE)) %>% 
   st_transform(common_crs); plot(temp, col = NA, border = "red", lwd = 2)
 
 
-### 1. Shore cells ------------------------------------------------------------
+### -- 6.1 Shore cells --------------------------------------------------------
 
-# create a 500m buffer around land (takes a while, so use the already-made one)
+# # create a 500m buffer around land (takes a while, so use the already-made one)
 # distance <- 100 # Buffer distance in meters
 # land_buffer <- st_buffer(st_transform(wa_map, common_crs), dist = distance, nQuadSegs = 100) %>%
 #   st_make_valid()
@@ -229,7 +232,7 @@ water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col 
 water_offshore_polygon <- st_difference(water_polygon, st_union(buf)) %>% st_transform(common_crs); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
 
-## over north area
+# over north area
 small_grd_north <- st_make_grid(bbox_north, cellsize = 4000, square = T) %>% # 2000m x 2000m square, or 4km2
   st_as_sf() %>% 
   st_transform(common_crs); plot(small_grd_north)
@@ -246,7 +249,7 @@ small_grd_north <- st_intersection(small_grd_north, bbox_north) %>%
 small_grd_north$type <- "shore_north"
 
 
-## over wadandi area
+# over wadandi area
 small_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
   st_as_sf() %>% 
   st_transform(common_crs); plot(small_grd_wadandi)
@@ -263,11 +266,9 @@ small_grd_wadandi <- st_intersection(small_grd_wadandi, bbox_wadandi) %>%
 small_grd_wadandi$type <- "shore_wadandi"
 
 
-### 2. Offshore cells ---------------------------------------------------------
+### -- 6.2 Offshore cells -----------------------------------------------------
 
-# large cells over north offshore cells.
-
-## over north cells
+# over north cells
 hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
 plot(hab_north)
 
@@ -286,7 +287,7 @@ big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(bi
 big_grd_north$type <- "offshore_north"
 
 
-## over wadandi cells
+# over wadandi cells
 hab_wadandi <- crop(hab, st_transform(bbox_wadandi, crs(hab)))
 plot(hab_wadandi)
 
@@ -306,7 +307,7 @@ big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plo
 big_grd_wadandi$type <- "offshore_wadandi"
 
 
-### 3. Merge all grids together -----------------------------------------------
+## 7. Merge all grids together ------------------------------------------------
 
 # merge the big and small grids together
 shore_grd <- rbind(small_grd_north, small_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(shore_grd)
@@ -340,7 +341,9 @@ st_write(grd_final, "data/output_data/01_B_grid_to_cleanup.shp", append = F)
 grd_final <- st_read("data/output_data/Q_grid_cleaned_up_01_B.shp")
 
 
-### 4. Extract habitat values to the grid cells -------------------------------
+## 8. Extract habitat values to the grid cells --------------------------------
+
+# -- In script 01_A we made the habitat prediction, here we take 1 value (average) of habitat for a whole cell. 
 
 mean_values <- extract(hab_raster, st_transform(grd_final, crs(hab_raster)), fun = mean, na.rm = TRUE); head(mean_values)
 summary(is.na(mean_values)) # check there are no NAs
@@ -354,6 +357,38 @@ water_sf <- st_as_sf(water_vect) %>%
 
 plot(water_sf)
 
+
+## 9. Save outputs ------------------------------------------------------------
+
+# CHECK
+p_overview <- ggplot() +
+  geom_sf(data = water_sf) +
+  theme_minimal()
+ggsave("plots/script_plot_checks/01_B/01_B_grid_overview.png", plot = p_overview, width = 5, height = 10, dpi = 1000)
+
+p_closeup <- ggplot() +
+  geom_sf(data = water_sf) +
+  coord_sf(
+    ylim = c(-32.3, -32),
+    xlim = c(115.8, 115.4),
+    default_crs = sf::st_crs(4326)
+  ) +
+  theme_minimal()
+ggsave("plots/script_plot_checks/01_B/01_B_grid_close_up.png", plot = p_closeup, width = 5, height = 5, dpi = 1000)
+
+p_hab <- ggplot(water_sf |>
+                  pivot_longer(cols = c(sand, reef, seagrass),
+                               names_to = "habitat",
+                               values_to = "probability")) +
+  geom_sf(aes(fill = probability), col = NA) +
+  facet_wrap(~habitat, ncol = 3) +
+  scale_fill_gradientn(colours = colour_palette[c(3:6)], na.value = "transparent") +
+  theme_minimal() +
+  labs(fill = "Probability")
+ggsave("plots/script_plot_checks/01_B/01_B_grid_habitat.png", plot = p_hab, width = 10, height = 7, dpi = 1000)
+
+
+# save
 saveRDS(water_sf, "data/output_data/01_B_water.rds")
 
 ## END ##
