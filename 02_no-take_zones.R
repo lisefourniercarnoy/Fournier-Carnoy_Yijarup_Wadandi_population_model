@@ -309,17 +309,6 @@ p <- ggplot() +
   theme_minimal()
 ggsave("plots/script_plot_checks/02/02_grid_closures.png", plot = p, width = 6, height = 10, dpi = 500)
 
-# CHECK : habitat overlay with grid
-p <- ggplot() +
-  geom_sf(data = water |> pivot_longer(cols = c("sand", "reef", "seagrass"), names_to = "hab_type", values_to = "hab_val"),
-          aes(fill = hab_val), col = NA) +
-  facet_wrap(~hab_type,  ncol = 3) +
-  scale_fill_gradientn(colours = colour_palette[c(3:6)], na.value = "transparent") +
-  coord_sf() +
-  theme_minimal()
-ggsave("plots/script_plot_checks/02/02_grid_predicted_habitat.png", plot = p, width = 8, height = 6, dpi = 500)
-
-
 # .rds
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
 
