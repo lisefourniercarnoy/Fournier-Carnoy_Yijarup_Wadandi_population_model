@@ -4,7 +4,7 @@
 # Data:    BRUV data from GB and SW
 # Task:    Figure out habitat affinities of mature and immature snapper
 # Author:  Lise Fournier-Carnoy + Harry Carmody
-# Date:    February 2026
+# Date:    August 2026
 
 # -----------------------------------------------------------------------------
 
@@ -16,37 +16,36 @@
 
 rm(list = ls())
 
-library(mgcv)
-library(lme4)
-library(MASS)
-library(CheckEM) # obtain data from EM
 library(tidyverse) # data handling
+library(CheckEM) # obtain data from EM
 library(sf) # to handle spatial objects
-library(terra) # to handle spatial objects
-library(glmmTMB) # to fit GLMM
+library(terra) # to handle spatial objectslibrary(mgcv)
+library(lme4) # to model
+library(MASS)
+library(glmmTMB) # to fit GLMM (section 2.4)
 
-## Files needed ---------------------------------------------------------------
+## 0. Files needed ------------------------------------------------------------
 
-file_gb_obs_habitat <- "data/input_data/habitat_affinity/D01_waatern_tidy_habitat.rds"
-file_sw_obs_habitat <- "data/input_data/habitat_affinity/D01_waatu_tidy_habitat.rds"
+file_gb_obs_habitat   <- "data/input_data/habitat_affinity/D01_waatern_tidy_habitat.rds"
+file_sw_obs_habitat   <- "data/input_data/habitat_affinity/D01_waatu_tidy_habitat.rds"
 
-file_gb_lengths <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Lengths.txt"
-file_sw_lengths <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Lengths.txt"
+file_gb_lengths       <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Lengths.txt"
+file_sw_lengths       <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Lengths.txt"
 
-file_gb_maxn <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Points.txt"
-file_sw_maxn <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Points.txt"
+file_gb_maxn          <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Points.txt"
+file_sw_maxn          <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Points.txt"
 
-file_gb_metadata <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
-file_sw_metadata <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Metadata.csv"
+file_gb_metadata      <- "data/input_data/habitat_affinity/2024-04_Geographe_stereo-BRUVs_Metadata.csv"
+file_sw_metadata      <- "data/input_data/habitat_affinity/2024-10_SwC_stereo-BRUVs_Metadata.csv"
 
-file_pred_hab <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
+file_pred_hab         <- "data/output_data/01_A_bathymetry_habitat_rasters.rds"
 
 
-## Load data ------------------------------------------------------------------
+## 1. Load data ---------------------------------------------------------------
 
-# load habitat, lengths, metadata, and maxn, then remove false zeroes from the dataset
+# -- load habitat, lengths, metadata, and maxn, then remove false zeroes from the dataset
 
-### Habitat -------------------------------------------------------------------
+### 1.1 Habitat ---------------------------------------------------------------
 
 # observed
 hab_gb <- readRDS(file_gb_obs_habitat) %>% 
@@ -65,11 +64,9 @@ hab_sw <- readRDS(file_sw_obs_habitat) %>%
 
 hab <- rbind(hab_gb, hab_sw) %>% glimpse()
 
-
 # predicted
 pred_hab <- readRDS(file_pred_hab) %>% 
   glimpse()
-
 
 # combine predicted and observed habitats
 hab_sf <- st_as_sf(hab)
@@ -80,9 +77,10 @@ test2 <- cbind(hab, test) %>% dplyr::select(-ID)
 glimpse(test2)
 hab <- test2
 
-### Metadata ------------------------------------------------------------------
 
-# Add metadata back into it
+### 1.2 Metadata --------------------------------------------------------------
+
+# add metadata back into it
 meta_gb <- read.csv(file_gb_metadata, sep = ",", header = T, fill = T) %>% 
   dplyr::select(
     opcode,
@@ -100,7 +98,7 @@ meta_sw <- read.csv(file_sw_metadata, sep = ",", header = T, fill = T) %>%
 metadata <- rbind(meta_gb, meta_sw)
 
 
-### MaxN counts ---------------------------------------------------------------
+### 1.3 MaxN counts -----------------------------------------------------------
 
 maxn_gb <- read.table(
   file_gb_maxn,
@@ -140,7 +138,7 @@ maxn <- rbind(maxn_gb, maxn_sw) %>%
   glimpse()
 
 
-### Lengths -------------------------------------------------------------------
+### 1.4 Lengths ---------------------------------------------------------------
 
 length_split <- 375 
 length_gb <- read.table(
@@ -188,7 +186,7 @@ length_dat <- full_join(metadata, length_dat, by = "opcode") %>%
   glimpse()
 
 
-### Find false zeroes ---------------------------------------------------------
+### 1.5 Find false zeroes -----------------------------------------------------
 
 length_zeroes <- unique(length_dat$opcode[is.na(length_dat$total)]) # opcodes where no fish were lengthed. calculate here because this is zeroes not split by mature/immature which is what we want
 length_zeroes
@@ -231,7 +229,7 @@ dat_final <- dat %>%
 saveRDS(dat, file = "data/output_data/03_A_habitat_affinity_outputs/03_A_tidy_data.rds")
 
 
-## Actually try some models ---------------------------------------------------
+## 2. Actually try some models ------------------------------------------------
 
 ## the aim of the analysis is to understand the relative affinity of mature and immature snapper to different habitat
 dat_final$depth2 <- dat_final$depth^2 # square depth
@@ -243,7 +241,9 @@ cor <- dat_final %>%
 corrplot::corrplot(cor, addCoef.col = T)
 # we're all good here (nothing over 0.7 except for depth and depth2 which is okay)
 
-### 1. try the Poisson distribution -------------------------------------------
+
+### 2.1 try the Poisson distribution ------------------------------------------
+
 glm_p <- glm(data = dat_final, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
              count ~ depth + depth2 +
                size_class +
@@ -255,43 +255,20 @@ glm_p <- glm(data = dat_final, # 'count is dependent on depth, size class, and h
 )
 summary(glm_p)
 
-# overdispersion: conditional variance = conditional mean ?
+# overdispersion: does the conditional variance = conditional mean ?
 mean(glm_p$fitted.values)
 var(glm_p$residuals) # lol very much not. var>mean, overdispersion detected.
 # this means that Poisson is not suitable. Ignoring this leads to inflated SEs, and therefore wrong p-values
 
 
-### 2. try the Negative Binomial distribution ---------------------------------
+### 2.2 Try the Negative Binomial distribution --------------------------------
 
-# using the observed habitat from the BRUVs annotation.
-# for now we'll use the model with predicted habitat. keeping this here in case we need later.
-# glm_nb <- glm.nb(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
-#                  count ~ depth + depth2 +
-#                    size_class +
-#                    reef + sand +
-#                    size_class:depth +
-#                    size_class:depth2 +
-#                    size_class:reef + 
-#                    size_class:sand # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
-# )
-# 
-# summary(glm_nb) # notice Theta: Theta = 1/dispersion parameter. It's meant to capture the dispersion
-# 1/glm_nb$theta # this is the dispersion parameter
-# 
-# # likelihood ratio test: is the nb model sig better than the poisson model
-# lmtest::lrtest(glm_p, glm_nb) # very much significant. this justifies the use of the nb model.
-# 
-# 
-# # have a look at the diagnostics
-# par(mfrow = c(2, 2))
-# plot(glm_nb) # that looks decent
-# 
-# summary(glm_nb)
-# saveRDS(glm_nb, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds")
-
+# -- to model habitat affinity, we'll use the predicted habitat (from script 01_A) layers instead of the observed habitat.
+# -- this is because the predicted habitat represents a broader area (250m resolution), whereas the observed habitat is only within 20m.
+# -- by using predicted habitat we're trying to understand the macro-scale affinity, not the micro-scale affinity.
 
 # try predicted habitat
-glm_nb_p <- glm.nb(data = dat_final, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+glm_nb_p <- glm.nb(data = dat_final, # "count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class."
                  count ~ depth + depth2 +
                    size_class +
                    preef.fit + psand.fit +
@@ -310,50 +287,50 @@ print(summary(glm_nb_p))
 saveRDS(glm_nb_p, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds") # AS OF 06/03/2026 I AM USING THIS MODEL. 
 
 
-### 3. test for zero-inflation ------------------------------------------------
+### 2.3 Test for zero-inflation -----------------------------------------------
 
-# BRUV data may be zero-inflated (more zeroes than expected)
-# we will test for zero-inflation by calculating how many zeroes our model expects
+# -- BRUV data may be zero-inflated (more zeroes than expected)
+# -- we will test for zero-inflation by calculating how many zeroes our model expects
 pred <- predict(glm_nb_p, type = "response")
 theta <- sigma(glm_nb_p)
 expected_zero_prob <- (theta / (theta + pred))^theta
-sum(expected_zero_prob) # about 540 zeroes are expected
-sum(dat$count == 0) # we have 600 zeroes ... it's a bit over what the model expects, let's test whether this is significant
+sum(expected_zero_prob) # about 500 zeroes are expected
+sum(dat_final$count == 0) # we have 550 zeroes ... it's a bit over what the model expects, let's test whether this is significant
 
 sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb_p)
 plot(sim_nb)
 DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that our data is not zero-inflated. 
-# we can use a normal negative binomial model to model this data.
+# -- we can use a normal negative binomial model to model this data.
 
 
-## below is archive, when i thought my data was overinflated
+## below is not needed if the model is not overinflated. 
 
-# # zero-inflated models allow you to specify the count model and the zero model. if unspecified, they have the exact same predictors.
-# # for the count model, you need to think about what may influence abundance.
-# # for the zero model, you need to think about what may cause structural zeroes (= in what conditions is it impossible to observe fish)
-
-# # therefore let's try a zero-inflated model (try poisson first)
+# # -- zero-inflated models allow you to specify the count model and the zero model. if unspecified, they have the exact same predictors.
+# # -- for the count model, you need to think about what may influence abundance.
+# # -- for the zero model, you need to think about what may cause structural zeroes (= in what conditions is it impossible to observe fish)
+# 
+# # -- therefore let's try a zero-inflated model (try poisson first)
 # glm_zip <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
 #                           count ~ depth + depth2 +
 #                             size_class +
 #                             reef + sand +
 #                             size_class:depth +
-#                             size_class:reef + 
+#                             size_class:reef +
 #                             size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
 #                           dist = "poisson", link = "logit"
 # )
 # summary(glm_zip) # it looks like 2 model outputs
-# # count model coefficients (poisson with log link) is basically a normal glm (poisson) that tells you how much more counts are expected along each predictor.
-# # zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios. not useful for us here, but they account for the zero-inflation.
+# # -- count model coefficients (poisson with log link) is basically a normal glm (poisson) that tells you how much more counts are expected along each predictor.
+# # -- zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios. not useful for us here, but they account for the zero-inflation.
 # 
-# # let's try a zero-inflated model (negative binomial) to see if it's better.
+# # -- let's try a zero-inflated model (negative binomial) to see if it's better.
 # glm_zinb <- pscl::zeroinfl(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
 #                            count ~ depth + depth2 +
 #                              size_class +
-#                              reef + sand + 
+#                              reef + sand +
 #                              size_class:depth +
 #                              size_class:depth2 +
-#                              size_class:reef + 
+#                              size_class:reef +
 #                              size_class:sand, # not adding seagrass because otherwise habitat is super predictable and model doesn't run.
 #                            dist = "negbin", link = "logit"
 # )
@@ -362,27 +339,27 @@ DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that ou
 # 
 # 
 # summary(glm_zinb) # it looks like 2 model outputs
-# # count model coefficients (poisson with log link) is basically a normal glm (poisson)
-# # zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios.
+# # -- count model coefficients (poisson with log link) is basically a normal glm (poisson)
+# # -- zero-inflation model coefficients (binomial with logit link) the odds that the response takes the value of 0. these are odds ratios.
 # 
-# # let's test whether the zero-inflated and non-zero-inflated are statistically the same
+# # -- let's test whether the zero-inflated and non-zero-inflated are statistically the same
 # pscl::vuong(glm_p, glm_zip) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
 # 
 # pscl::vuong(glm_nb, glm_zinb) # here the 'Raw' p-value is highly significant, meaning the zi model is better than the non-zi
 # AIC(glm_nb, glm_zinb) # AIC of the zinb model is lower than non-zi model, so zinb model is better.
 # 
-# lmtest::lrtest(glm_zip, glm_zinb) # highly significant, the zinb is better. 
+# lmtest::lrtest(glm_zip, glm_zinb) # highly significant, the zinb is better.
 # 
 # summary(glm_zinb)
 # 
-# # the exponentiated coefficients give us the IRR (incidence rate ratio) - i.e. how much more/less likely the expected count is compared to the reference
+# # -- the exponentiated coefficients give us the IRR (incidence rate ratio) - i.e. how much more/less likely the expected count is compared to the reference
 # exp(coef(glm_zinb))
 
 
-### 4. Try a GLMM to account for location -------------------------------------
+### 2.4 Try a GLMM to account for location ------------------------------------
 
-# there is a nested structure to the data (2 sampling sites: GB and SW), which violates the assumption of independence of errors.
-# a GLMM accounts for this with random effects for location (by adding + (1|location)).
+# -- there is a nested structure to the data (2 sampling sites: GB and SW), which violates the assumption of independence of errors.
+# -- a GLMM accounts for this with random effects for location (by adding + (1 | location)).
 
 glmm_zinb <- glmmTMB(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
                      count ~ depth + depth2 +
@@ -396,12 +373,11 @@ glmm_zinb <- glmmTMB(data = dat, # 'count is dependent on depth, size class, and
                      family = nbinom2,
                      ziformula = ~1) # zero inflation model
 summary(glmm_zinb)
-# the model is full of NaN - because 1. there isnt much difference in count between the locations - 2. there aren't enough sites (>5 recommended for GLMM)
-# it could be an over-parameteristion problem but removing effects is not a good move here because we need all those covariates for the purposes of our model.
+# -- the model is full of NaN - because 1. there isnt much difference in count between the locations - 2. there aren't enough sites (>5 recommended for GLMM)
+# -- it could be an over-parameteristion problem but removing effects is not a good move here because we need all those covariates for the purposes of our model.
 
-# we'll go back to our glm_nb, with the assumption of independence of errors kind of violated-but-not-too-much
-# the large difference in habitat between GB and SW doesn't need to be accounted for in a random effect, because habitat (fixed effects) already capture this difference.
-
+# -- we'll go back to our glm_nb, with the assumption of independence of errors kind of violated-but-not-too-much
+# -- the large difference in habitat between GB and SW doesn't need to be accounted for in a random effect, because habitat (fixed effects) already capture this difference.
 
 
 ### END ###
