@@ -1,42 +1,38 @@
 # -----------------------------------------------------------------------------
 
 # Project: Wadandi Pink Snapper Population Model
-# Data:    Spatial layers from 01_Cleaning-files.R
-# Task:    Intersect habitat grid with NTZ?
+# Data:    Spatial layers from 01_B
+# Task:    Intersect habitat grid with NTZ
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    August 2024
+# Date:    August 2026
 
 # -----------------------------------------------------------------------------
 
-# Status:  So far so good, may need adjustments from 01
+# Status:  Final and complete.
 
 # -----------------------------------------------------------------------------
 
+rm(list = ls()) # clean working environment
+
+colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
+common_crs = 4283
+
+# load libraries
 library(tidyverse) # to manipulate data
 library(ggplot2) # for pretty plots
 library(sf) # to manipulate spatial layers
 
-rm(list = ls()) # Clean working environment
 
-colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
-
-
-## Set projection and extent --------------------------------------------------
-
-common_crs = 4283
-bbox <- st_bbox(c(xmin = 114.4, xmax = 116.0, ymin = -35.3, ymax = -32.5), crs = common_crs)
-
-
-## Files used in this script --------------------------------------------------
+## 0. Files used in this script -----------------------------------------------
 
 file_NTZ    <- "data/output_data/Q_NTZ_manual_clean_01_B.shp"
 file_water  <- "data/output_data/01_B_water.rds"
 file_land   <- "data/input_data/Q_aus_land_high_res_no_estuary.shp"
 
-fleets <- c("commercial", "boat_rec", "shore_rec") # these are the fleets from 01_B "MP_permissions" that describe fishing per marine park zone
+fleets <- c("commercial", "boat_rec", "shore_rec") # these are the fleets from 01_B "MP_permissions" that describe fishing authorisations per marine park zone
 
 
-## Load files -----------------------------------------------------------------
+## 1. Load files --------------------------------------------------------------
 
 land <- st_read(file_land) %>%
   st_transform(common_crs)
@@ -92,7 +88,7 @@ NTZ <- rbind(com_closure_only, NTZ)
 plot(NTZ$geometry, col = "red")
 
 
-## Make a temporal closure area -----------------------------------------------
+## 2. Make a temporal closure area --------------------------------------------
 
 # TC = temporal closure
 TC_poly <- matrix(c(
@@ -129,7 +125,7 @@ temporal_closure_details = list(
 
 TC <- TC %>% 
   mutate(
-    name = "Cockburn Sound temporal closure", # WHATEVER NAME IS HERE SHOULD HAVE THE EXACT TERMS 'temporal closure' IN IT OR THE REST WONT WORK
+    name = "Cockburn Sound temporal closure", # WHATEVER NAME IS HERE SHOULD HAVE THE EXACT TERMS 'temporal closure' IN IT OR THE REST WON'T WORK
     TC_restriction_date = list(as.integer(vapply(temporal_closure_details, `[`, "", 1))),
     TC_restriction_months = list(vapply(temporal_closure_details, `[`, "", 2)),
     TC_restriction_perc_fished = list(vapply(temporal_closure_details, `[`, "", 3))
@@ -147,7 +143,7 @@ closures <- bind_rows(TC, NTZ)
 plot(closures[, !sapply(closures, is.list)])
 
 
-## Adjusting the grid to account for temporal/spatial closures ----------------
+## 3. Adjusting the grid to account for temporal/spatial closures -------------
 
 # colnames that should be present: 
 # SC_status SC_restriction_date
@@ -188,7 +184,7 @@ TC_SC_overlap <- st_intersection(TC_area, NTZ) %>%
 mapview::mapview(TC_SC_overlap[!is.list(TC_SC_overlap)])
 
 
-# Make a grid for areas that are spatial closure only
+# make a grid for areas that are spatial closure only
 NTZarea <- st_intersection(NTZ, water) %>% 
   st_make_valid() %>%
   st_transform(common_crs)
@@ -240,17 +236,17 @@ ggplot(water) +
 
 mapview::mapview(water[!is.list(water)])
 
-## Identify spawning ground ---------------------------------------------------
+## 4. Identify spawning ground ------------------------------------------------
 
 # sg = spawning ground
 
 # make a rough polygon of cockburn + warnbro sound
 sg_poly <- matrix(c(
-  115.742245, -32.050302,  # freo
-  115.635004, -32.066268,  # straggler_rock
+  115.742245, -32.050302,   # freo
+  115.635004, -32.066268,   # straggler_rock
   115.838059, -32.365724,   # point_kennedy
-  115.659383, -32.373515,    # warnbro
-  115.742245, -32.050302   # close polygon back to freo
+  115.659383, -32.373515,   # warnbro
+  115.742245, -32.050302    # close polygon back to freo
 ), 
 ncol = 2, byrow = TRUE,
 dimnames = list(NULL, c("lon", "lat")))
@@ -301,14 +297,37 @@ water$ID <- 1:nrow(water)
 
 mapview::mapview(water[!is.list(water)], alpha = 0.1)
 
-## Save files for next step ---------------------------------------------------
 
+## 5. Save files for next step ------------------------------------------------
+
+# CHECK : grid overlay with closures
+p <- ggplot() +
+  geom_sf(data = water,
+          aes(fill = name), col = "gray") +
+  scale_fill_manual(values = colorRampPalette(colour_palette)(8), na.value = "transparent") +
+  coord_sf() +
+  theme_minimal()
+ggsave("plots/script_plot_checks/02/02_grid_closures.png", plot = p, width = 6, height = 10, dpi = 500)
+
+# CHECK : habitat overlay with grid
+p <- ggplot() +
+  geom_sf(data = water |> pivot_longer(cols = c("sand", "reef", "seagrass"), names_to = "hab_type", values_to = "hab_val"),
+          aes(fill = hab_val), col = NA) +
+  facet_wrap(~hab_type,  ncol = 3) +
+  scale_fill_gradientn(colours = colour_palette[c(3:6)], na.value = "transparent") +
+  coord_sf() +
+  theme_minimal()
+ggsave("plots/script_plot_checks/02/02_grid_predicted_habitat.png", plot = p, width = 8, height = 6, dpi = 500)
+
+
+# .rds
 saveRDS(st_as_sf(water), file = "data/output_data/02_watergrid.rds")
+
+# .shp
 test <- water %>%
   mutate(cell_area = round(cell_area, digits = 0)) %>% 
   dplyr::select(-TC_restriction_date, -TC_restriction_months, 
                 -TC_restriction_perc_fished, -SC_restriction_date)
-
 saveRDS(test, "data/output_data/02_watergrid.shp")
 
 ### END ###
