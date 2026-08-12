@@ -23,6 +23,9 @@ library(terra) # to handle spatial objectslibrary(mgcv)
 library(lme4) # to model
 library(MASS)
 library(glmmTMB) # to fit GLMM (section 2.4)
+library(broom) # to make output table
+library(flextable) # to make output table
+
 
 ## 0. Files needed ------------------------------------------------------------
 
@@ -285,6 +288,44 @@ plot(glm_nb_p) # that looks decent
 
 print(summary(glm_nb_p))
 saveRDS(glm_nb_p, "data/output_data/03_A_habitat_affinity_outputs/03_A_model.rds") # AS OF 06/03/2026 I AM USING THIS MODEL. 
+
+
+# CHECK: model output table
+tidy_glm <- broom::tidy(glm_nb_p) %>%
+  mutate(
+    across(c(estimate, std.error, statistic), ~round(.x, 4)),
+    p.value = round(p.value, 4),
+    signif = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.1   ~ ".",
+      TRUE ~ ""
+    )
+  )
+ft <- flextable(tidy_glm) %>%
+  set_header_labels(
+    term = "Term",
+    estimate = "Estimate",
+    std.error = "Std. Error",
+    statistic = "z value",
+    p.value = "Pr(>|z|)",
+    signif = ""
+  ) %>%
+  autofit() %>%
+  theme_vanilla() %>%
+  add_footer_lines(
+    paste0(
+      "Null deviance: ", round(glm_nb_p$null.deviance, 2),
+      " on ", glm_nb_p$df.null, " df | ",
+      "Residual deviance: ", round(deviance(glm_nb_p), 2),
+      " on ", glm_nb_p$df.residual, " df | ",
+      "AIC: ", round(AIC(glm_nb_p), 1), " | ",
+      "Theta: ", round(glm_nb_p$theta, 4),
+      " (SE = ", round(glm_nb_p$SE.theta, 4), ")"
+    )
+  )
+save_as_image(ft, path = "plots/script_plot_checks/03_A/03_A_model_table.png")
 
 
 ### 2.3 Test for zero-inflation -----------------------------------------------
