@@ -4,23 +4,14 @@
 # Data:    Data from project files.
 # Task:    Set up info cubes for commercial fishing, to use in C++ function
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    March 2026
+# Date:    August 2026
 
 # -----------------------------------------------------------------------------
 
-# intended outputs are:
-# catchability coefficient (% of all individuals removed from a cell by hypothetical fishing sweeping the cell)
-# cell utility (which cells are more likely to be fished)
-# fishing effort values (how many boat days every)
-
-# Notes: This script goes like this:
-# 1. calculate travel cost
-# 2. calculate cell utility
-# 3. catchability
-
-# -----------------------------------------------------------------------------
-
-## Load libraries -------------------------------------------------------------
+# -- intended outputs are:
+# -- cell attractiveness for commercial fishing (which cells are more likely to be fished)
+# -- catchability of each cell (which will determine the % of all individuals removed from each cell by 1 unit of effort)
+# -- fishing effort values (how many boat days every ramp gets in every timestep)
 
 rm(list = ls())
 
@@ -32,66 +23,48 @@ library(abind) # dealing with matrices
 library(sfnetworks) # distance from cell to cell
 library(exactextractr) # extracting raster values
 
-
-## Custom plotting parameters -------------------------------------------------
 colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
-source("custom_theme.R")
 
-## 0. Files used in this script -----------------------------------------------
 
-file_wa           <- "data/output_data/01_B_land.shp"
-file_bathy        <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
-file_boat_ramps_w <- "data/input_data/wadandi_boat_ramps.shp"
-file_boat_ramps_n <- "data/input_data/north_boat_ramps.shp"
-file_water        <- "data/output_data/03_B_water.rds"
-file_network      <- "data/output_data/03_B_network_shapefile.shp"
+## 0. files needed ------------------------------------------------------------
+
+file_water          <- "data/output_data/03_B_water.rds"
+file_network        <- "data/output_data/03_B_network_shapefile.shp"
+file_wa             <- "data/output_data/01_B_land.shp"
+file_bathy          <- "data/input_data/SW_crop_AusBathyTopo__Australia__2024_250m_MSL_cog.tif"
+file_boat_ramps_w   <- "data/input_data/wadandi_boat_ramps.shp"
+file_boat_ramps_n   <- "data/input_data/north_boat_ramps.shp"
 
 year_start <- 1900
 year_end <- 2024
-n_years_tot <- year_end - year_start +1
+n_years_tot <- year_end - year_start + 1
 current_fleet <- "commercial"
 
-common_crs <- 4283
-crs_raster <- "+proj=longlat +datum=WGS84 +no_defs"
+common_crs = 7850
 bbox <- st_bbox(c(xmin = 114.4, ymin = -34.75, xmax = 116.0, ymax = -31), crs = common_crs) %>%
   st_as_sfc() %>%
-  st_transform(crs_raster)
+  st_transform(crs = common_crs)
 
-water <- readRDS(file_water) %>% filter(!is.na(ID))
-NCELL <- nrow(water)
-
-fishing_info_list <- list()
+NCELL <- nrow(readRDS(file_water))
 
 
-# 3. fishability --------------------------------------------------------------
+## 1. Elements useful to multiple elements of the script ----------------------
 
-# fishability refers to whether this cell in this month and this year is open to fishing.
-# each fleet has a different fishability because not all closures/NTZs apply to everyone.
+# -- several things can be calculated once and used for multiple output calculations.
 
-# fishability is between 0 and 1: 
-# 0 not fishable for the entire month, 
-# 1 fishable for the entire month
-# decimals mean either:
-## a. fishable for part of the month (in the case of temporal closures), or 
-## b. partially fishable in area (related to the % of the cell that's within fishable depth)
+### 1.1 Fishable depth --------------------------------------------------------
 
-# for the final cell x month x year cube, we need: 
-## depth fishability (better engines over time allow deeper fishing)
-## temporal fishability (cell x month x year)
-## cell area
-
-## we will calculate: (depth fishability x temporal fishability * cell area) / total fishable area
-
-## 3.a depth fishability ------------------------------------------------------
-
-# this section of the fishing effort relates to boats being able to fish further over the years, with bigger boats, more powerful engines etc.
-# the model takes this into account by adding a 'fishable depth' into the mix, which goes more and more offshore.
-# for commercial fishing, we're assuming that on average, fishers can fish 1.3m more every year. (change as needed in parameters)
+# -- this section of the fishing effort relates to boats being able to fish further over the years, with bigger boats, more powerful engines etc.
+# -- the model takes this into account by adding a 'fishable depth' into the mix, which goes more and more offshore.
+# -- for commercial fishing, we're assuming that on average, fishers can fish 1.3m more every year. (change as needed in parameters)
+water <- readRDS(file_water) |> st_transform(common_crs)
+centroids <- st_centroid(water %>% st_make_valid()) |> 
+  st_transform(common_crs)
 NCELL <- nrow(water)
 
 # prepare grid cells
 plot(water$geometry)
-wa_mask <- st_read(file_wa); wa_mask <- st_transform(wa_mask, crs = crs_raster); wa_mask <- as(wa_mask, "Spatial"); plot(wa_mask, col = "lightgray", add = T)
+wa_mask <- st_read(file_wa); wa_mask <- st_as_sf(wa_mask) %>% st_transform(common_crs); plot(wa_mask, col = "lightgray", add = T)
 plot(bbox, add = T)
 
 # set parameters
@@ -102,10 +75,10 @@ depth_per_year <- 1.3 # fishable depth gained per year (m) - arbitrary to reach 
 
 # prepare the bathymetry layer
 bathy <- rast(file_bathy) %>%
-  project(crs_raster) %>% 
-  crop(as(water, "Spatial")) %>%
+  project(paste0("EPSG:", common_crs)) %>%
+  crop(vect(water)) %>%
   abs() %>%
-  terra::mask(vect(wa_mask), inverse = TRUE); plot(bathy)
+  terra::mask(vect(st_transform(wa_mask, common_crs)), inverse = TRUE)
 
 thresholds <- min_depth + pmax(0, depth_per_year*(years - increase_year)) # depth limits for each year
 
@@ -131,38 +104,42 @@ fishable_depth_cell_year <- fishable_summary %>%
 # strip "year_" prefix from colnames
 colnames(fishable_depth_cell_year) <- gsub("year_", "", colnames(fishable_depth_cell_year))
 
-fishable_depth_cell_month_year <- array(
-  aperm(replicate(12, fishable_depth_cell_year), c(1, 3, 2)),
-  dim = c(NCELL, 12, 125),
-  dimnames = list(NULL))
+fishable_depth_cell_year[is.na(fishable_depth_cell_year)] <- TRUE # replace NA with 1, these are cells close to shore which are out of the bathymetry layer (but would be shallow enough to fish from the start)
 
-fishable_depth_cell_month_year[is.na(fishable_depth_cell_month_year)] <- FALSE # replace Na with 0
-
-## sanity check station 
-test_year = 110
-test <- fishable_depth_cell_month_year[, 1, test_year]
-ggplot(data = water %>% mutate(test = test)) +
+# CHECK: fishable depth at different times
+test_year = c(1, 50, 60, 90)
+p <- ggplot(data =  water %>%
+         mutate(as.data.frame(fishable_depth_cell_year[, test_year]) %>%
+                  setNames(paste0("year_", test_year))) %>%
+         tidyr::pivot_longer(
+           cols = starts_with("year_"),
+           names_to = "year",
+           names_prefix = "year_",
+           values_to = "test"
+         )
+       ) +
   geom_sf(aes(fill = test), colour = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  facet_wrap(~ year, ncol = length(test_year)) +
   theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_fishable_depth_commercial.png", plot = p, width = 10, height = 6, dpi = 500)
 
 
-## 3.b Temporal fishability ---------------------------------------------------
+### 1.2 Cell area -------------------------------------------------------------
 
-# this is just a cell x month x year cube that tells you whether there's a closure or not in the cell.
-# some cells are closed for only part of the month (ex. temporal closure that starts midway through the month) 
-# so that cell would have the value 0.5 that month.
+water <- readRDS(file_water) |> st_transform(common_crs)
+cell_area <- water$cell_area / 1000000 # just cell area in km2
+cell_area <- as.numeric(water$cell_area)
 
+### 1.3 Temporal fishability --------------------------------------------------
+
+# -- this is a cell x month x year cube that tells you whether the cell is closed (0), partially open (>0, <1) or open (1).
+
+water <- readRDS(file_water) |> st_transform(common_crs)
 glimpse(water)
 
-## in this section (1.) we calculate the fishable area of the cells in each time step (1.a), then divide it by the fishable area of the whole grid at each time step (1.b)
-## which gives us each the portion of Catchability of each cell.
-## because the area that is catchable changes (with spatial and temporal restrictions), we have to calculate the grid's catchability for each month of each year.
-
-
-### 3.b.a. find the fishable area of each cell in each time step --------------
-
-water <- readRDS(file_water) %>% filter(!is.na(ID))
+water[[current_fleet]] <- ifelse(water[[current_fleet]] == "T", TRUE, 
+                                 ifelse(water[[current_fleet]] == "F", FALSE, water[[current_fleet]]))
 NCELL <- nrow(water)
 
 # identify the important cells
@@ -172,9 +149,9 @@ temporal_cells <- water$ID[water$TC_status == TRUE]
 water_area <- array(0, dim = c(NCELL, 12, (year_end-year_start+1))) # cells x months x years
 water_area[, 1:12, 1] <- water$cell_area # for all months of the first year, the catchable area is the cell's area.
 
-# the loop goes as follows: for each time step, 
-# check whether there's a spatial restriction that year, if so the fishable area is 0
-# then, if the cell has a temporal closure, restrict fishable area as needed.
+# -- the loop goes as follows: for each time step, 
+# -- check whether there's a spatial restriction that year, if so the fishable area is 0
+# -- then, if the cell has a temporal closure, restrict fishable area as needed.
 for (YEAR in 1:dim(water_area)[3]) {
   
   current_year <- year_start + YEAR - 1
@@ -186,7 +163,7 @@ for (YEAR in 1:dim(water_area)[3]) {
     water_area[, MONTH, YEAR] <- water$cell_area
     
     restricted_cells <- which(
-      !is.na(water$commercial) & water[[current_fleet]] == FALSE & # where fleet is not allowed,
+      !is.na(water[[current_fleet]]) & water[[current_fleet]] == FALSE & # where fleet is not allowed,
         !is.na(restriction_dates) & current_year >= restriction_dates # and when SC is in place...
     )
     water_area[restricted_cells, MONTH, YEAR] <- 0 # ...the cell is not fishable
@@ -217,16 +194,16 @@ for (YEAR in 1:dim(water_area)[3]) {
 } # this loop calculates for every month and every year, the fishable area of each cell.
 
 
-### sanity check station
+# -- sanity check station
 
 test_cell <- 200
 test_month <- 10
 test_year <- 125
 
-# reference cell numbers as of 13.01.2026:
-## cockburn sound cell (temporal closure): 1
-## SWC NTZ cell: 200
-## random fished cell: 1000
+# -- reference cell numbers as of 13.01.2026:
+# -- cockburn sound cell (temporal closure): 1
+# -- SWC NTZ cell: 200
+# -- random fished cell: 1000
 
 # restrictions in this cell should be:
 glimpse(st_drop_geometry(water[test_cell, c("TC_status", "SC_status", "commercial", "SC_restriction_date", "TC_restriction_date", "TC_restriction_months", "TC_restriction_perc_fished")]))
@@ -235,64 +212,90 @@ glimpse(st_drop_geometry(water[test_cell, c("TC_status", "SC_status", "commercia
 cat("In month", test_month, "of year", (year_start+test_year-1),
     ", the cell is", ifelse(water_area[test_cell, test_month, test_year]>0, "fishable", "NOT fishable"), "for commercial boats.", "Fishable area: ", water_area[test_cell, test_month, test_year]/1e06, "km2")
 
-## sanity check station 
-test_year = 60
+
+# CHECK: closure of cells
+test_year = 120
 test <- water_area[, 1, test_year]
 ggplot(data = water %>% mutate(test = test)) +
   geom_sf(aes(fill = test), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[6:4]) +
   theme_minimal()
 
-### 3.b.b calculate catchability ----------------------------------------------
-
-# catchability is the % of the population being harvested by 1 unit effort.
-# it is unknowable, so we will need to calibrate it. 
-# see script 04_D for process 
-
-q <- readRDS("data/output_data/04_D_commercial_q.rds")$Q
-
-fishable_area <- water_area * fishable_depth_cell_month_year # cell x month x year
-fishable_area_sum <- colSums(fishable_area) # month x year
-fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
-catchability <- array(0, dim = dim(fishable_area))
-for (y in 1:dim(fishable_area)[3]) {
-  for (m in 1:12) {
-    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
-  }
-}
-catchability[catchability == Inf] <- 0  # if cells are not fishable, division by zero (in loop above). change to zero to avoid messing everything up later on.
-
-## sanity check station 
-test_year = 100
-test <- catchability[, 1, test_year]
-ggplot(data = water %>% mutate(test = (test))) +
+test_year = c(90, 100, 110, 120)
+test_month = 12
+p <- ggplot(data = water %>%
+              mutate(as.data.frame(water_area[, test_month, test_year]) %>%
+                       setNames(paste0("year_", test_year))) %>%
+              tidyr::pivot_longer(
+                cols = starts_with("year_"),
+                names_to = "year",
+                names_prefix = "year_",
+                names_transform = as.numeric,
+                values_to = "test"
+              )
+) +
   geom_sf(aes(fill = test), colour = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4]) +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  facet_wrap(~ year, ncol = length(test_year)) +
   theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_fishable_area_commercial.png", plot = p, width = 10, height = 6, dpi = 500)
 
 
-# 1. travel cost = distance from access points * fuel price -------------------
+## 2. Fisher cell attractivity ------------------------------------------------
 
-## 1.a fuel price -------------------------------------------------------------
+# -- ultimately to distribute fishing effort we need to have a formula of this shape: 
+# -- (travel cost * coef1) + (log(offshore dist) * coef2) + (log(cell area) * coef3)
+# -- ‾‾‾‾‾‾‾‾‾‾‾‾                 ‾‾‾‾‾‾‾‾‾‾‾‾‾                  ‾‾‾‾‾‾‾‾‾
+# --     2.3                           2.1                          1.2
 
-# obtain fuel prices from the literature
-fuel_price <- read.csv("data/input_data/fuel_prices.csv") # data from https://www.bitre.gov.au/sites/default/files/is_082.pdf
-base_cpi <- fuel_price$CPI[fuel_price$year == 2012]
-fuel_price$real_price <- fuel_price$petrol_price * (base_cpi / fuel_price$CPI) # adjust the fuel prices for inflation
-
-plot(fuel_price$real_price ~ fuel_price$year, type = "l") # plot check
-
-# fill in missing values
-fuel_price_clean <- data.frame(year = year_start:year_end) %>%
-  left_join(fuel_price %>% dplyr::select(year, real_price), by = "year") %>%
-  fill(real_price, .direction = "downup") %>% 
-  glimpse()
-plot(fuel_price_clean$real_price ~ fuel_price_clean$year, type = "l") # plot check
+# -- the coefficients we do not have from published literature, and will therefore be eyeballed.
+# -- in commercial fishing, we consider all ramps to be built from the start. boat rec fishing would include build date in this attractivity.
 
 
-## 1.b distance from access points --------------------------------------------
+### 2.1 Shore distance --------------------------------------------------------
 
-water <- readRDS(file_water)
+water <- readRDS(file_water) |> st_transform(common_crs)
+
+# find shore. we will use this to calculate distance of all cells to shore.
+shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>%
+  st_make_valid() %>% 
+  st_union() %>% 
+  st_transform(common_crs) %>% 
+  st_as_sf()
+
+network <- st_read(file_network)|> st_transform(common_crs); plot(network$geometry)
+
+centroids <- st_centroid(water %>% st_make_valid()) |> st_transform(common_crs)
+
+shore_dist <- st_distance(centroids, shore) / 1000 # distance from shore in km
+shore_dist <- as.data.frame(shore_dist) %>% mutate(ID = water$ID, shore_dist = as.numeric(shore_dist))
+glimpse(shore_dist)
+
+
+# CHECK: cells' distance from shore
+p <- ggplot(data = water %>% dplyr::select(!where(is.list)) %>% mutate(shore_dist = as.numeric(shore_dist$shore_dist))) + 
+  geom_sf(aes(fill = shore_dist), col = NA) +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_shore_distance_commercial.png", plot = p, width = 6, height = 10, dpi = 500)
+
+
+### 2.2 Ramp built ------------------------------------------------------------
+
+# -- for commercial ramps, we consider them to be built at the onset of the simulation
+# -- so this would be all '1', so here we ignore it. 
+
+### 2.3 Travel cost -----------------------------------------------------------
+
+# -- here we account for the fact that fishers are limited in how far they can afford to go.
+# -- for commercial fishermen, cells close to the ramp, but far from shore are preferred.
+
+
+#### 2.3.1 Distance from access points ----------------------------------------
+
+# -- the intended output here is an object of size cell x access point
+
+water <- readRDS(file_water) |> st_transform(common_crs)
 
 BR_n <- st_read(file_boat_ramps_n) %>% 
   st_transform(common_crs) %>%
@@ -303,7 +306,6 @@ BR_n <- st_read(file_boat_ramps_n) %>%
          norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
   glimpse()
 
-
 BR_w <- st_read(file_boat_ramps_w) %>% 
   st_transform(common_crs) %>%
   st_make_valid() %>%
@@ -312,7 +314,7 @@ BR_w <- st_read(file_boat_ramps_w) %>%
          norm_popularity = as.numeric(com_prop) / sum(as.numeric(com_prop), na.rm = TRUE)) %>%
   glimpse()
 
-# for commercial fishing, only a few boat ramps are useds, so select only correct ramps (see Andrea Gaynor's historical fishing resources, fishing localities in ABS stats)
+# for commercial fishing, only a few boat ramps are used, so select only correct ramps (see Andrea Gaynor's historical fishing resources, fishing localities in ABS stats)
 unique(BR_w$name)
 BR_w <- BR_w %>% 
   dplyr::filter(BR_w$name %in% c("SC_Augusta_Ellis_St_Jetty", "WC_Gnarabup", "WC_Hamelin_Bay",
@@ -347,8 +349,9 @@ network <- as_sfnetwork(network, directed = FALSE) %>%
   activate("edges") %>%
   mutate(weight = edge_length())
 
-net <- activate(network, "nodes")
-net <- net %>% st_transform(common_crs) 
+net <- activate(network, "nodes")  %>% st_transform(common_crs) 
+
+plot(centroids$geometry)
 
 # measure the distance from access points to cell centroids
 network_matrix <- st_network_cost(net, from = BR, to = points_sf)
@@ -361,137 +364,168 @@ access_dist$ID <- water$ID
 access_dist <- access_dist / 1000
 head(access_dist) # this gives us each cell's distance to the access points
 
-## sanity check station
+
+# CHECK: distance from access point
 access_dist <- access_dist %>% mutate(ID = centroids$ID)
 water_dist_long <- water %>% left_join(access_dist, by = "ID") %>% pivot_longer(cols = BR$name, names_to = "Ramp", values_to = "Distance_km")
-ggplot(water_dist_long %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[1:10])) + 
-  geom_sf(aes(fill = as.numeric(Distance_km)), color = NA) + 
-  scale_fill_gradientn(colours = colour_palette[4:6]) +
-  facet_wrap(~ Ramp, ncol = 5) + 
-  labs(title = "Cell distance to access points", fill = "Distance (km)") +
+BR_2 <- BR %>% rename(Ramp = name)
+p <- ggplot() +
+  geom_sf(data = water_dist_long %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[1:10]),
+          aes(fill = as.numeric(Distance_km)), color = NA) +
+  geom_sf(data = BR_2 %>% dplyr::filter(Ramp %in% unique(water_dist_long$Ramp)[1:10]),
+          shape = 21, fill = "red") +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  facet_wrap(~ Ramp, ncol = 5) +
+  labs(fill = "Distance (km)") +
   theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_access_point_distance_commercial.png", plot = p, width = 10, height = 10, dpi = 500)
 
 
-## 1.c calculate travel cost --------------------------------------------------
+#### 2.3.2 Fuel prices & efficiency -------------------------------------------
 
-glimpse(access_dist) # cell x access_point
-glimpse(fuel_price_clean) # vec year
+# -- we want to obtain one value per year, expressed in $/km
 
-# figure out, for each ramp, the travel cost (cell x access_p x years)
-dist_matrix <- as.matrix(access_dist[, -ncol(access_dist)])  # drop ID column
+# obtain fuel prices from the literature
+fuel_price <- read.csv("data/input_data/fuel_prices.csv") # data from https://www.bitre.gov.au/sites/default/files/is_082.pdf
 
-travel_cost <- array(rep(dist_matrix, times = nrow(fuel_price_clean)),
-                     dim = c(nrow(access_dist), 
-                             ncol(access_dist)-1, 
-                             nrow(fuel_price_clean))
-                     )
+# adjust for inflation
+base_cpi <- fuel_price$CPI[fuel_price$year == 2012]
+fuel_price$price_inflation <- fuel_price$petrol_price * (base_cpi / fuel_price$CPI) # adjust the fuel prices for inflation
+fuel_price$price_dollar <- fuel_price$price_inflation / 100 # convert into $
 
+plot(fuel_price$price_dollar ~ fuel_price$year, type = "l") # plot check
 
-travel_cost <- sweep(
-  travel_cost,
-  MARGIN = 3,
-  STATS  = fuel_price_clean$real_price,
-  FUN    = "*"
-) # calculate the product (fun = "*") of access_dist using fuel price (stats =) across years (margin = 3), 
+fuel_price$price_per_km <- fuel_price$price_dollar / (1 / 2.54) # here we do cross-product of $, L and km. 2.54 is a value from Nicole Hamre
 
-## sanity check
-par(mfrow = c(1,1))
-test1 <- travel_cost[1,1,] # cell 1 from access_p 1
-test2 <- travel_cost[1,2,] # cell 1 from access_p 2
-
-plot(test2, type = "l", col = "red")
-lines(test1, type = "l")
+# fill in missing values
+fuel_price_clean <- data.frame(year = year_start:year_end) %>%
+  left_join(fuel_price %>% dplyr::select(year, price_per_km), by = "year") %>%
+  fill(price_per_km, .direction = "downup") %>% 
+  glimpse()
+plot(fuel_price_clean$price_per_km ~ fuel_price_clean$year, type = "l") # plot check
 
 
-# 2. calculate cell attractivity ----------------------------------------------
+### 2.4 Calculate cell attractivity -------------------------------------------
 
-## 2.a. distance to shore -----------------------------------------------------
+# -- okay so now that we have most of our elements, we can make a function that defines the 'attractivity' of each cell
+# -- the format should be: cell x access point x year
 
-shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>%
-  st_make_valid() %>% 
-  st_union() %>% 
-  st_transform(st_crs(water)) %>%  # find shore. we will use this to calculate distance of all cells to shore.
-  st_as_sf()
+attractivity <- array(dim = c(NCELL, nrow(BR), 12, n_years_tot))
 
-network <- st_read(file_network); plot(network$geometry)
+for(YEAR in 1:n_years_tot) {
+  for(MONTH in 1:12) {
+    for (ACCESS in 1:nrow(BR)) {
+      attractivity[, ACCESS, MONTH,  YEAR] <- 
+        -0.01 * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
+        2.5 * log(shore_dist$shore_dist + 1) + # offshore dist
+        1 * log(cell_area + 1) # cell area
+      
+      # and then we add the depth fishability, to turn off cells that are too deep
+      attractivity[, ACCESS, MONTH, YEAR][fishable_depth_cell_year[,YEAR] == 0] <- NA # effort gets allocated to cells with high attractivity. here all cells have a negative attractivity, so we set unfishable cells to be even more negative than that
+      # also turn off cells that are under closure
+      attractivity[, ACCESS, MONTH, YEAR][water_area[, MONTH, YEAR] == 0] <- NA
+    }
+  }
+}
+tail(attractivity[,1,12,125])
 
-centroids <- st_centroid(water %>% st_make_valid())
-shore_dist <- st_distance(centroids, shore) / 1000 # distance from shore in km
-shore_dist <- as.data.frame(shore_dist) %>% mutate(ID = water$ID, shore_dist = as.numeric(shore_dist))
-glimpse(shore_dist)
-
-# plot check
-ggplot(data = water %>% dplyr::select(!where(is.list)) %>% mutate(shore_dist = as.numeric(shore_dist$shore_dist))) + 
-  geom_sf(aes(fill = shore_dist), col = NA) +
-  scale_fill_gradientn(colours = colour_palette[6:4])
-
-
-## 2.b cell attractivity = shore_dist / (travel cost + 1) --------------------------
-
-glimpse(shore_dist)
-glimpse(travel_cost)
-
-# we're making cell x access_p x year
-
-utility <- array(shore_dist$shore_dist,
-                 dim = c(nrow(access_dist), 
-                         ncol(access_dist)-1, 
-                         nrow(fuel_price_clean))
-)
-
-# also add depth fishability to the utility
-dim(fishable_depth_cell_month_year)
-dim(utility)
-fishable_depth_cell_year <- fishable_depth_cell_month_year[, 1, ]  # cell x year
-all(sapply(1:12, function(m) identical(fishable_depth_cell_month_year[, m, ], fishable_depth_cell_month_year[, 1, ])))
-dim(fishable_depth_cell_year)
-
-utility <- (utility / (travel_cost + 1))
-
-utility <- sweep(utility, c(1,3), fishable_depth_cell_year, "*")
+# CHECK: attractivity of cells from the POV of few access points
+test_year = 100
+test_month = 12
+test_access = c(1, 10)  # your two access point indices
+p <- ggplot() +
+  geom_sf(data = purrr::map_dfr(test_access, function(a) {
+    water %>%
+      mutate(attractivity = attractivity[, a, test_month, test_year],
+             access_id = a)
+  }), aes(fill = attractivity), colour = NA) +
+  geom_sf(data = BR_2[test_access, ] %>% mutate(access_id = test_access), shape = 21, fill = "red") +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  facet_wrap(~ access_id, labeller = labeller(access_id = function(x) BR_2$Ramp[as.numeric(x)])) +
+  theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_cell_attractivity_commercial.png", plot = p, width = 7, height = 10, dpi = 500)
 
 
-## sanity check - is attractivity higher for areas close to access points but far from shore
-test_access = 9
-ggplot() +
-  geom_sf(data = water %>% dplyr::select(!where(is.list)) %>% mutate(test = utility[, test_access, 1]), 
-          aes(fill = (test)), 
-          col = NA) +
-  geom_sf(data = BR[test_access,] %>% st_transform(4326) %>% st_transform(st_crs(water)), col = "red") +
-  scale_fill_gradientn(colours = colour_palette[6:4])
+# transform in a format that C++ can deal with easier
+attractivity <- lapply(1:12, function(m) {
+  arr <- attractivity[, , m, , drop = FALSE]   # keep 4D, dim3 = 1
+  dim(arr) <- dim(attractivity)[-3]             # collapse only the month axis -> (NCELL, n_access, n_years)
+  arr
+})
 
 
-# 4. set up fishing days values -----------------------------------------------
+## 3. Commercial catchability -------------------------------------------------
 
-# we need to know how much fishing occurs in the region, so that the function knows how much to distribute.
-# for commercial fishing, we are using a variety of sources to reconstruct the trends (a),
-# the sources are split between the Metropolitan area effort (North, 4.N) and the Southwest area effort (Wadandi, 4.W)
-# we will (b.) split the yearly effort into months, then (c.) split the monthly effort into access points (boat ramps).
+# -- catchability is the susceptibility of fish to be caught by 1 unit of effort. 
+# -- catchability differs for every cell, given that fish is more susceptible to being caught by 1 unit of effort in a cell of 10m2 compared to 1 unit of effort in a cell of 100km2.
+
+# -- catchability works with fishing effort to produce fishing mortality. 
+# -- it is unknowable, so we will need to calibrate it. 
+# -- see script 04_D for process 
+
+q <- readRDS("data/output_data/04_D_commercial_q.rds")$Q
+
+fishable_depth_expanded <- array(NA, dim = c(NCELL, 12, n_years_tot)); for (m in 1:12) {fishable_depth_expanded[, m, ] <- fishable_depth_cell_year}
+fishable_area <- water_area * fishable_depth_expanded # cell x month x year
+fishable_area_sum <- colSums(fishable_area) # month x year
+fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
+catchability <- array(0, dim = dim(fishable_area))
+for (y in 1:dim(fishable_area)[3]) {
+  for (m in 1:12) {
+    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
+  }
+}
+catchability[catchability == Inf] <- 0  # if cells are not fishable, division by zero (in loop above). change to zero to avoid messing everything up later on.
 
 
+# CHECK: catchability 
+test_year <- c(50, 100, 110)
+catch_mat <- catchability[, 1, test_year]  # matrix: cells x years
+catch_mat[catch_mat > 0.1] <- NA # some cells have extremely high catchability and make the plot flat - remove them to see fresh.
+p <- ggplot(data = water %>%
+              bind_cols(as.data.frame(catch_mat) %>%
+                          setNames(paste0("year_", test_year))) %>%
+              tidyr::pivot_longer(
+                cols = starts_with("year_"),
+                names_to = "year",
+                names_prefix = "year_",
+                names_transform = as.numeric,
+                values_to = "catchability"
+              )) +
+  geom_sf(aes(fill = catchability), colour = NA) +
+  scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
+  facet_wrap(~ year) +
+  ggtitle("cells with catchability <0.1 are shown, for display purposes. these cells which end up with high catchability due to small size") +
+  theme_minimal()
+ggsave("plots/script_plot_checks/04_A/04_A_catchability_commercial.png", plot = p, width = 7, height = 10, dpi = 500)
 
-### 4.N. North (Metropolitan) -------------------------------------------------
 
-#### 4.N.a. enter the overall effort values (boat days) -----------------------
+## 4. Fishing effort values ---------------------------------------------------
 
+# -- we know how much fishing there is (roughly) but we now need to distribute it across access points.
+
+### 4.1. Metro fishing effort -------------------------------------------------
+
+#### 4.1.1. Enter the overall effort values (boat days) -----------------------
+
+# obtain literature values
 years_full <- year_start:year_end
 g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
-  dplyr::select(c(YEAR, boat.days.north)) %>% # select only boat rec fishing columns.
+  dplyr::select(c(YEAR, boat.days.north)) %>% # select only commercial fishing columns.
   glimpse()
 
-plot(g_sheets$YEAR, g_sheets$boat.days.north)
-
-annual_effort_boat <- g_sheets %>% dplyr::select(c(YEAR, boat.days.north)) %>% 
+# fill the unknown year values with linear interpolation
+annual_effort_boat <- g_sheets %>% 
   rename(year = YEAR,
          boat_days = boat.days.north)
 annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
 
-# check
+# CHECK: commercial effort Metro
 plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
 
 
-#### 4.N.b. split yearly fishing effort by month ------------------------------
+#### 4.1.2 Split yearly fishing effort by month -------------------------------
 
 # obtain the monthly distribution of fishing from the literature
 seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022 - THIS IS FOR RECREATIONAL FISHING BUT CANT FIND COMMERCIAL EQUIVALENT
@@ -514,7 +548,7 @@ boat_effort_n <- expand.grid(
   ) %>%
   dplyr::select(year, month, monthly_effort)
 
-# sanity check station
+# CHECK: monthly commercial effort Metro
 ggplot(boat_effort_n, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
   geom_line(color = colour_palette[4]) +
   labs(title = paste0("Monthly Commercial Fishing Effort ", year_start, "-", year_end),
@@ -523,7 +557,7 @@ ggplot(boat_effort_n, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = 
   geom_smooth(color = colour_palette[5])
 
 
-# Proportion of each month's contribution to yearly boat days
+# proportion of each month's contribution to yearly boat days
 boat_month_prop <- boat_effort_n %>% 
   group_by(year) %>% 
   mutate(year_sum = sum(monthly_effort)) %>%
@@ -537,7 +571,7 @@ prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
 saveRDS(prop_month_ave, "data/output_data/04_A_commercial_metro_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
-#### 4.N.c. distribute monthly effort into boat ramps -------------------------
+#### 4.1.2 Distribute monthly effort into boat ramps --------------------------
 
 BR_n <- st_read(file_boat_ramps_n) %>% 
   st_transform(4283) %>%
@@ -598,28 +632,28 @@ ggplot(ramp_effort_n, aes(x=year, y=adjusted_effort)) +
 
 
 
-### 4.W. Wadandi (Southwest) --------------------------------------------------
+### 4.2 Wadandi fishing effort ------------------------------------------------
 
-#### 4.W.a. enter the overall effort values (boat days) -----------------------
+#### 4.2.1 Enter the overall effort values (boat days) ------------------------
 
+# obtain literature values
 years_full <- year_start:year_end
 g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
-  dplyr::select(c(YEAR, boat.days.wadandi)) %>% # select only boat rec fishing columns.
+  dplyr::select(c(YEAR, boat.days.wadandi)) %>% # select only commercial fishing columns.
   glimpse()
 
-plot(g_sheets$YEAR, g_sheets$boat.days.wadandi)
-
-annual_effort_boat <- g_sheets %>% dplyr::select(c(YEAR, boat.days.wadandi)) %>% 
+# fill the unknown year values with linear interpolation
+annual_effort_boat <- g_sheets %>% 
   rename(year = YEAR,
          boat_days = boat.days.wadandi)
 annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
 
-# check
+# CHECK: commercial effort Wadandi
 plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
 
 
-#### 4.W.b. split yearly fishing effort by month ------------------------------
+#### 4.2.2 Split yearly fishing effort by month -------------------------------
 
 # obtain the monthly distribution of fishing from the literature
 seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022 - THIS IS FOR REC FISHING BUT CANT FIND COMM EQUIVALENT
@@ -642,7 +676,7 @@ boat_effort_w <- expand.grid(
   ) %>%
   dplyr::select(year, month, monthly_effort)
 
-# check
+# CHECK: monthly commercial effort Wadandi
 ggplot(boat_effort_w, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
   geom_line(color = colour_palette[4]) +
   labs(title = paste0("Monthly Boat Fishing Effort ", year_start, "-", year_end),
@@ -650,7 +684,7 @@ ggplot(boat_effort_w, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = 
   theme_minimal() +
   geom_smooth(color = colour_palette[5])
 
-# Proportion of each month's contribution to yearly boat days - as of 21.01.2026 this is the same in W as in N.
+# proportion of each month's contribution to yearly boat days - as of 21.01.2026 this is the same in W as in N.
 boat_month_prop <- boat_effort_w %>% 
   group_by(year) %>% 
   mutate(year_sum = sum(monthly_effort)) %>%
@@ -666,7 +700,7 @@ plot(prop_month_ave)
 saveRDS(prop_month_ave, "data/output_data/04_A_commercial_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
 
-#### 4.W.c. distribute monthly effort into boat ramps -------------------------
+#### 4.2.3 Distribute monthly effort into boat ramps --------------------------
 
 # effort by boat_ramp (wadandi)
 BR_w <- st_read(file_boat_ramps_w) %>% 
@@ -686,7 +720,7 @@ BR_w <- BR_w %>%
 plot(water$geometry); plot(BR_w$geometry, col = colour_palette[5], pch = 16, cex = 1, add = TRUE)
 
 
-# Distribute effort across all ramps, across time
+# distribute effort across all ramps, across time
 boat_effort_w <- boat_effort_w %>%
   mutate(date = as.Date(paste(year, month, "01", sep = "-"))) # make a column with year and month of ramp build
 ramp_effort_w <- expand.grid(
@@ -704,7 +738,7 @@ ramp_effort_w <- expand.grid(
     ramp_weight = norm_popularity * logistic_growth
   )
 
-# Merge in monthly effort
+# merge in monthly effort
 ramp_effort_w <- ramp_effort_w %>%
   left_join(boat_effort_w, by = "date") %>%
   group_by(date) %>%
@@ -733,7 +767,6 @@ ggplot(ramp_effort_w, aes(x=year, y=adjusted_effort)) +
 
 
 # okay combine into a month x access point x year cube
-
 ramp_effort_n
 ramp_effort_w
 access_point_effort <- rbind(ramp_effort_n, ramp_effort_w)
@@ -759,26 +792,32 @@ dimnames(access_point_effort)[[2]] <- c(1:length(dimnames(access_point_effort)[[
 # utility # watch out that the order of ramp effort and of utility match: otherwise you're assigning the effort to the wrong ramp in the function
 
 
-# 5. create a list to use in the C++ function ---------------------------------
+## 5. Create a list to use in the C++ function --------------------------------
 
 # little details to include in the final list
-cell_area_m2 <- water$cell_area # just cell area
-coef_values <- tibble(log_utility = 1,
-                      expected_catch = 1,
-                      expected_catch_sq = 1,
-                      log_cell_area = 1
-                      ) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing so these are all 1.
+coef_values <- tibble(expected_catch = 1,
+                      expected_catch_sq = 1
+) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing
 
+fishing_info_list <- list(catchability, 
+                          attractivity, 
+                          access_point_effort, 
+                          cell_area, 
+                          coef_values)
 
-fishing_info_list <- list(catchability, utility, access_point_effort, cell_area_m2, coef_values)
-names(fishing_info_list) <- c("catchability", "utility", "fishing_days", "cell_area_m2", "coef_values")
+names(fishing_info_list) <- c("catchability", 
+                              "attractivity", 
+                              "fishing_days", 
+                              "cell_area", 
+                              "coef_values")
+
 saveRDS(fishing_info_list, "data/output_data/04_A_commercial_fishing_info.rds")
 
 
-## 6. SETTING UP EFFORT FOR BURN IN -------------------------------------------
+## 6. Setting up effort for the burn-in ---------------------------------------
 
-# the burn-in exists only to stabilise the population before the simulations start.
-# to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
+# -- the burn-in exists only to stabilise the population before the simulations start.
+# -- to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
 
 # obtain the relative contribution of each boat ramp
 effort_prop <- rbind(ramp_effort_n, ramp_effort_w) %>%
@@ -789,12 +828,10 @@ effort_prop <- rbind(ramp_effort_n, ramp_effort_w) %>%
   glimpse()
 barplot(effort_prop$com_prop)
 
-
 # calculate the low level of fishing
 eq.init.fish = 0.025 # this is the new level of fishing mortality, very low.
 q = 0.00001 # catchability, or the risk of a fish being caught
 effort = (-log(1-eq.init.fish))/q # this is the number of this fleet's fishing days in a year.
-
 
 # we then split this effort in every month
 seasonal_multipliers
@@ -805,7 +842,7 @@ burn_in_effort <- as.data.frame(burn_in_effort) %>%
   rename(effort = "burn_in_effort")
 
 
-## Split up by boat ramp
+# split up by boat ramp
 for(AP in 1:(ncol(burn_in_effort)-1)){
   burn_in_effort[AP+1]= burn_in_effort$effort*effort_prop[AP, "com_prop"]
 }
