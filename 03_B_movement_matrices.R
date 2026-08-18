@@ -61,7 +61,12 @@ ggplot(water) +
   theme_void()
 
 
-## 2. Calculate cell centroids and distance-to-neighbour-cells ----------------
+## 2. Setup the network for movement ------------------------------------------
+
+# -- this consists in: figuring out how far cells are from each other,
+# -- making a network to connect them
+
+### 2.1 Calculate cell centroids and distance-to-neighbour-cells --------------
 
 # -- create a function to calculate cell centroids
 
@@ -127,7 +132,7 @@ for (i in 1:n.closest){
 }
 
 
-## 3. Connect points to neighbours in a network -------------------------------
+### 2.2 Connect points to neighbours in a network -----------------------------
 
 n <- nrow(points)
 
@@ -162,7 +167,7 @@ edges_sf <- st_as_sf(st_cast(connected, "LINESTRING")) %>%
 st_write(connected, "data/output_data/03_B_network_shapefile.shp", delete_layer = T)
 
 
-## 4. Set up an sf network and a distance matrix ------------------------------
+### 2.3 Set up an sf network and a distance matrix ----------------------------
 
 network <- as_sfnetwork(connected, directed = FALSE) %>%
   activate("edges") %>%
@@ -191,7 +196,7 @@ mtext(paste0("Distance around land is ", round((st_network_cost(net, from=points
       cex = 1.2, col = colour_palette[5])
 
 
-## 5. Adding habitat to the cells ---------------------------------------------
+### 2.4 Adding habitat to the cells -------------------------------------------
 
 # the habitat predictions are probabilities, and we want to normalise them so they add up to 1.
 habitat_cols <- c("reef", "seagrass", "sand")
@@ -203,69 +208,41 @@ water[habitat_cols] <- as.data.frame(st_drop_geometry(water[habitat_cols])) / ro
 summary(rowSums(st_drop_geometry(water[habitat_cols]))) # and now they do!
 
 
-## 6. Save files to use in the next step --------------------------------------
+### 2.5 Save files to use in the next step ------------------------------------
 
 saveRDS(network_matrix, file = "data/output_data/03_B_network_matrix.rds")
 saveRDS(water, file = "data/output_data/03_B_water.rds")
 
 
-## 7. Create connectivity matrix for fish movement ----------------------------
+### 2.6 Create connectivity matrix for fish movement --------------------------
 
-# Assume the fish will try and swim the shortest path between locations.
-# Calculate the probability a fish moves to this site in a given time step using a swimming speed.
-# This creates a dispersal kernel based on the negative exponential distribution.
+# -- fish will tend to move from cells with habitat they have low affinity with, to cells with habitat they have high affinity with.
 
 network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
 
-## below is hashed out because it takes a while to run (5-10min). rerun if needed.
-
+# # below is hashed out because it takes a while to run (5-10min). rerun if needed.
+# 
 # pDist <- matrix(NA, ncol=NCELL, nrow=NCELL)
 # for(r in 1:NCELL){
 #   for(c in 1:NCELL){
-#     p <- network_matrix[r,c]*1
+#     p <- network_matrix[r,c]
 #     pDist[r,c] <- p
 #   }
 # } # this loop compares the distance of cell 1 with every other cell, cell 2 with every other cell, cell 3....
 
 
-# calculate the difference in habitat types between each of the cells i.e. will there be an increase in reef % if you go from cell 1 to cell 2
-habitat_types <- c("reef", "seagrass", "sand")
-habitat_perc <- list(
-  reef = water$reef,
-  seagrass = water$seagrass,
-  sand = water$sand
-)
-glimpse(habitat_perc)
+### 2.7 Save all the files you need to remake these matrices ------------------
 
-# we want to calculate the difference in habitat cover between each grid cell. this will determine how likely a fish is to move from one grid cell to another.
-p_habitat <- list() # initialize a list to store the matrices
-
-# loop over each habitat type in habitat_perc
-for (habitat in names(habitat_perc)) {
-
-  print(habitat) # see where you are
-  p_matrix <- matrix(NA, ncol = NCELL, nrow = NCELL) # create an empty matrix
-
-  # compute the difference matrix
-  for (r in 1:NCELL) {
-    for (c in 1:NCELL) {
-      p_matrix[r, c] <- as.numeric(habitat_perc[[habitat]][c] - habitat_perc[[habitat]][r])
-    }
-  }
-
-  # store the matrix in the list
-  p_habitat[[habitat]] <- p_matrix
-} # the loop compare the habitat cover of cell 1 to every other cell, then cell 2 to every other cell, then cell 3, etc. for every habitat type
-glimpse(p_habitat)
+# saveRDS(pDist, "data/output_data/03_B_pDist.rds")
 
 
-## 8. Save all the files you need to remake these matrices --------------------
+## 3. Fish movement -----------------------------------------------------------
 
-saveRDS(pDist, "data/output_data/03_B_pDist.rds")
-saveRDS(p_habitat, "data/output_data/03_B_p_habitat.rds")
+# -- assume the fish will try and swim the shortest path between locations.
+# -- calculate the probability a fish moves to this site in a given time step using a swimming speed.
+# -- this creates a dispersal kernel based on the negative exponential distribution.
 
-
-## 9. Adult movement probability ----------------------------------------------
+### 3.1 Non-migrating adult movement probability ------------------------------
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
@@ -379,10 +356,9 @@ p <- do.call(grid.arrange, c(plot_list, ncol = 3))
 ggsave("plots/script_plot_checks/03_B/03_B_adult_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-## 10. Migrating adult movement probability -----------------------------------
+### 3.2 Migrating adult movement probability ----------------------------------
 
 # -- okay so for large adults (say 600mm+) they need to move to embayments to spawn...
-
 # -- movement probability depends on three things:
 
 # 1. habitat affinity
@@ -445,7 +421,7 @@ for (i in 1:NCELL) {
   }
 } # -- this loop calculates the difference in habitat affinity between cells.
 
-# from this we can determine the utility of each of the cells.
+# -- from this we can determine the utility of each of the cells.
 # -- this is very sensitive to changes in the habitat values.
 
 # -- here we need to make habitat affinity much more attractive. when checking the ranges of the two elements we're using to make the movement prob, hab_aff definitely needs to be bumped up.
@@ -515,12 +491,12 @@ for (i in 1:num_samples) {
   
 } # this loop creates, for a random cell, a map of which cells are most likely to be travelled to, and a plot of how cumulative probability of travel by distance
 
-# Plot all in a 2-row, 3-column layout (fits 6 plots, 3 pairs)
+# plot all in a 2-row, 3-column layout (fits 6 plots, 3 pairs)
 p <- do.call(grid.arrange, c(plot_list, ncol = 3))
 ggsave("plots/script_plot_checks/03_B/03_B_spawner_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-## 11. Recruitment matrix -----------------------------------------------------
+### 3.3 Recruit probability ---------------------------------------------------
 
 # -- we want the recruits to be in seagrass and spawning ground, and then move out from there 
 
@@ -575,20 +551,20 @@ p <- ggplot() +
 ggsave("plots/script_plot_checks/03_B/03_B_recruitment_habitat_affinity.png", plot = p, width = 6, height = 10, dpi = 500)
 
 
-## CHECK:: "Based on the percentage frequency of females in each length class, 
-# the relative contribution of Cockburn Sound females, in terms of batch 
-# fecundity, was ~1.6 times that of snapper in oceanic waters in the metro and 
-# south-west" from https://wamsi.org.au/app/uploads/2025/02/WWMSP-4.1-Snapper-connectivity-and-juvenile-stocking.pdf#page=4.35
+# CHECK:: "Based on the percentage frequency of females in each length class, 
+# -- the relative contribution of Cockburn Sound females, in terms of batch 
+# -- fecundity, was ~1.6 times that of snapper in oceanic waters in the metro and 
+# -- south-west" from https://wamsi.org.au/app/uploads/2025/02/WWMSP-4.1-Snapper-connectivity-and-juvenile-stocking.pdf#page=4.35
 
 cs_spawn <- sum(water_recruitment$recruitment_prob[water_recruitment$spawning_status==TRUE])
 non_cs_spawn <- sum(water_recruitment$recruitment_prob[water_recruitment$spawning_status==FALSE])
 
 cs_spawn / non_cs_spawn
-#  okay so - problem here is that no matter how important i make CS cells, they don't reach the 1.6x thing we're lookin for
+# okay so - problem here is that no matter how important i make CS cells, they don't reach the 1.6x thing we're lookin for
 # putting this on the shelf for nowwwwwww...... that'll bite me in the arse later but it's a calculated decision..?
 
 
-## 12. Juvenile movement ------------------------------------------------------
+### 3.4 Juvenile movement -----------------------------------------------------
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
@@ -703,7 +679,7 @@ p <- do.call(grid.arrange, c(plot_list, ncol = 3))
 ggsave("plots/script_plot_checks/03_B/03_B_juvenile_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-## 13. Save files for next step -----------------------------------------------
+### 3.5 Save files for next step ----------------------------------------------
 
 saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_B_adult_movement_", swim_speed_adult, "_swim_speed.rds"))
 saveRDS(spawning_cell_movement_probability, paste0("data/output_data/03_B_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
