@@ -59,7 +59,7 @@ plot(c_effort[75:125], type = "l")
 # we then fit an 'tech adoption' curve as they did in the paper
 alpha = mean(c(1, 0.918)) # % of all fishers who adopt the tech, mean of values in paper
 beta = mean(c(-0.531, -0.493)) # shape of curve, mean of values in paper
-delta = mean(c(3.821, 2.251)) + 88 # x midpoint of curve, mean of values in paper + 86 (since the midpoint of fig 2a and 2b is 1984 and 1990)
+delta = mean(c(3.821, 2.251)) + 90 # x midpoint of curve, mean of values in paper + 86 (since the midpoint of fig 2a and 2b is 1984 and 1990)
 
 logistic_fn <- function(y) {
   alpha / (1 + exp(beta * (y - delta)))
@@ -113,7 +113,7 @@ plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
 # in table 2 we are given the mean efficiency increase of fishers when they use GPS and colour sounders.
 # we will use these to get a pattern of Q over time for commercial fishers
 # we'll also use a base Q (catchability) value - to be calibrated to obtain a sensical fishing mortality
-base_Q <- 5e-08
+base_Q <- 6e-08
 Q_inc = mean(c(133.2, 39.2))/100
 Q_boat_rec <- data.frame(
   year = 1900:2024, 
@@ -134,7 +134,7 @@ plot(F_boat_rec$year[75:125], F_boat_rec$F[75:125], type = "l") # this should so
 
 s_effort <- apply(dat_srec$fishing_days, 3, sum)  # vector, length 125
 
-start_Q <- 4e-08
+start_Q <- 6e-08
 Q_shore_rec <- data.frame(year = 1900:2024, 
                           Q = start_Q) %>%
   glimpse()
