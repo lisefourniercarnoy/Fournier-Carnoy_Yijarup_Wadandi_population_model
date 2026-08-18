@@ -74,6 +74,8 @@ mature         <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
 settlement     <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse() #; settlement <- settlement[, 1] # selecting a single column because the function expects a vector
 age_transition <- readRDS("data/output_data/05_age_transition_matrix.rds") %>% glimpse()
 adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+juv_movement   <- readRDS("data/output_data/03_b_juv_movement_10_swim_speed.rds") %>% glimpse()
+spawn_movement <- readRDS("data/output_data/03_b_spawning_movement_10_swim_speed.rds") %>% glimpse()
 
 fleet_names <- c(
   "commercial", 
@@ -98,7 +100,7 @@ fleet_info = list(com_info,
 
 RECONS_pop <- list() # keep record of the burn-in outputs
 RECONS_catch_weight <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); names(RECONS_catch_weight) <- fleet_names
-RECONS_catch_number <- list()
+RECONS_catch_number <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); names(RECONS_catch_weight) <- fleet_names
 RECONS_SSB <- list()
 RECONS_effort <- list()
 
@@ -124,6 +126,8 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
                                          maturity = mature,
                                          settlement = settlement,
                                          adult_movement_prob = adult_movement,
+                                         juv_movement_prob = juv_movement,
+                                         spawn_movement_prob = spawn_movement,
                                          fleet_names = fleet_names,
                                          fleet_info = fleet_info
   )
@@ -136,30 +140,30 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
   RECONS_catch_number[YEAR+1,] <- sapply(ModelOutput$catch_number_by_fleet, sum)
   RECONS_effort[[YEAR+1]] <- ModelOutput$effort_by_fleet # array: cell x month x fleet
   
-  # add a plot check, to avoid wasting time on running the function
-  total_by_length_age <- apply(current_pop, c(2, 3), sum)
-  age_structure       <- colSums(total_by_length_age)   # summed over lengths
-  size_structure      <- rowSums(total_by_length_age)   # summed over ages
-  
-  png(
-    filename = file.path("plots/checking_plots_during_setup/07_A_recons_plot_checks/", sprintf("recons_year_%04d.png", YEAR + 1)),
-    width = 1200, height = 500, res = 120
-  )
-  
-  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-  
-  plot(age_structure,
-       type = "l", lwd = 2, col = colour_palette[6],
-       xlab = "Age class", ylab = "Total abundance",
-       main = paste0("Age structure — Year ", YEAR + 1))
-  
-  plot(size_structure,
-       type = "l", lwd = 2, col = colour_palette[4],
-       xlab = "Length bin", ylab = "Total abundance",
-       main = paste0("Size structure — Year ", YEAR + 1))
-  
-  dev.off()
-  
+  # # add a plot check, to avoid wasting time on running the function
+  # total_by_length_age <- apply(current_pop, c(2, 3), sum)
+  # age_structure       <- colSums(total_by_length_age)   # summed over lengths
+  # size_structure      <- rowSums(total_by_length_age)   # summed over ages
+  # 
+  # png(
+  #   filename = file.path("plots/checking_plots_during_setup/07_A_recons_plot_checks/", sprintf("recons_year_%04d.png", YEAR + 1)),
+  #   width = 1200, height = 500, res = 120
+  # )
+  # 
+  # par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+  # 
+  # plot(age_structure,
+  #      type = "l", lwd = 2, col = colour_palette[6],
+  #      xlab = "Age class", ylab = "Total abundance",
+  #      main = paste0("Age structure — Year ", YEAR + 1))
+  # 
+  # plot(size_structure,
+  #      type = "l", lwd = 2, col = colour_palette[4],
+  #      xlab = "Length bin", ylab = "Total abundance",
+  #      main = paste0("Size structure — Year ", YEAR + 1))
+  # 
+  # dev.off()
+  # 
 }
 
 End = Sys.time()
@@ -231,45 +235,6 @@ ggplot(yearly_catch[75:124,]) +
   labs(x = "Year", y = "Catch (kg)", title = "Annual catch by fleet") +
   theme_bw()
 
-
-### fishing mortality ---------------------------------------------------------
-
-total_pop <- lapply(RECONS_pop, function(pop) sum(pop[,,5:40]))
-yearly_catch <- as.data.frame(RECONS_catch_number)
-names(yearly_catch) <- fleet_names
-
-yearly_catch[,1] <- yearly_catch[,1] / unlist(total_pop)
-yearly_catch[,2] <- yearly_catch[,2] / unlist(total_pop)
-yearly_catch[,3] <- yearly_catch[,3] / unlist(total_pop)
-
-par(mfrow = c(1,1))
-ggplot(yearly_catch[75:124,]) +
-  geom_line(lwd = 1, aes(x = 75:124, y = commercial), colour = "red") +
-  geom_line(lwd = 1, aes(x = 75:124, y = boat_rec), colour = "blue") +
-  geom_line(lwd = 1, aes(x = 75:124, y = shore_rec), colour = "green") +
-  labs(x = "Year", y = "Catch %", title = "Annual catch by fleet") +
-  theme_bw()
-
-
-
-
-full_years <- 1975:2024
-F_ss <- read.csv("data/input_data/digitised_plots_for_checking/F_digitised_from_stock_assessment.csv") %>%
-  glimpse()
-F_ss <- data.frame(
-  x = full_years,
-  y = approx(x = F_ss$x, y = F_ss$y, xout = full_years)$y
-)
-
-test <- yearly_catch[74:124,]
-
-F_all <- (test$commercial + test$shore_rec + test$boat_rec)
-plot(x = F_ss$x, F_ss$y, lwd = 2, col = "steelblue", type = "l")
-lines(x = 1975:2025, y = F_all, col = "firebrick", lwd = 2)
-
-
-
-
 ### CHECK: effort distribution ------------------------------------------------
 
 water <- readRDS("data/output_data/02_watergrid.rds")
@@ -286,12 +251,12 @@ water_effort <- water %>%
     values_to = "effort"
   )
 
-# ggplot(water_effort) +
-#   geom_sf(aes(fill = effort), color = NA) +
-#   scale_fill_viridis_c(name = "Effort") +
-#   facet_wrap(~ fleet, nrow = 1) +
-#   theme_void() +
-#   ggtitle("Fishing effort by fleet (ultimate year, Month 12)")
+ggplot(water_effort[water_effort$fleet == "commercial",]) +
+  geom_sf(aes(fill = effort), color = NA) +
+  scale_fill_viridis_c(name = "Effort") +
+  facet_wrap(~ fleet, nrow = 1) +
+  theme_void() +
+  ggtitle("Fishing effort by fleet (ultimate year, Month 12)")
 
 
 plot_data <- water_effort[water_effort$fleet == "commercial", c("effort")] # keeps geometry automatically
