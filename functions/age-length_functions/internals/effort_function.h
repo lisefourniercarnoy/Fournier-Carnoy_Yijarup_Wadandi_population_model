@@ -52,6 +52,11 @@ Rcpp::List distribute_effort_function(
       // 2.A. find fishable cells
       arma::vec attractivity_now_vec = cell_attractivity_now.col(access_point);
       arma::uvec fishable_mask = arma::find_finite(attractivity_now_vec);
+      if (fishable_mask.is_empty()) {
+        // no cell is fishable/reachable from this access point right now -> no effort allocated
+        utility_calc.col(access_point).zeros();
+        continue; // skip to the next access_point
+      }
       
       // 2.B. figure out coefficients
       arma::vec cell_coefficent_here_now(max_cell, arma::fill::value(-1e10)); // default: unfishable
@@ -66,7 +71,7 @@ Rcpp::List distribute_effort_function(
       double utility_sum = arma::sum(cell_utility_here_now);
       utility_calc.col(access_point) = (utility_sum > 0)
         ? cell_utility_here_now / utility_sum
-      : arma::vec(max_cell, arma::fill::value(1.0 / max_cell));
+      : arma::vec(max_cell, arma::fill::zeros); // no fishable cells this month -> no effort allocated, not uniform effort
       
       }
     
