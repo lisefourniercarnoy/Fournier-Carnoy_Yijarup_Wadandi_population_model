@@ -60,6 +60,10 @@ ggplot(water) +
   geom_sf(aes(fill = depth), colour = NA) +
   theme_void()
 
+reef <- water$reef
+sand <- water$sand
+seagrass <- water$seagrass
+
 
 ## 2. Setup the network for movement ------------------------------------------
 
@@ -260,7 +264,7 @@ hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model p
                                               pseagrass.fit = seagrass
                                               ),
                    type = "response")
-list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
+#list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
 
 
 # 2. distance from other cells
@@ -582,7 +586,7 @@ hab_aff <- predict(hab_aff_mod, # this will use colnames that are in the model p
                                               pseagrass.fit = seagrass
                                               ),
                    type = "response")
-list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
+#list2env(habitat_perc, envir = .GlobalEnv)# this brings all the list objects into the environment (seagrass, sand, reef)
 
 
 # 2. distance from other cells
@@ -593,7 +597,7 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 # -- small movement Swim Speed = 2.5 95% within approx 10km 
 # -- medium movement Swim Speed = 5 95% within approx 25km
 # -- big movement Swim Speed = 10 95% within approx 45km 
-swim_speed_juv <- 10
+swim_speed_juv <- 5
 a = -(1/swim_speed_juv)
 
 
