@@ -108,14 +108,17 @@ M <- 0.12 # yearly natural mortality, table 4.2 https://library.dpird.wa.gov.au/
 
 # selectivity - for now considered as the same for rec and commercial fishing, as even Wise et al. 2007 group them together, p.99. https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1206&context=fr_rr#page=94.59 
 # parameter of selectivity ogive
-V50 <- 3.701 # Table 6.3.8, v50 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
-V95 <-  5.290 # Table 6.3.8, v95 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
+#V50 <- 3.701 # Table 6.3.8, v50 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
+#V95 <-  5.290 # Table 6.3.8, v95 from https://researchlibrary.agric.wa.gov.au/cgi/viewcontent.cgi?article=1029&context=fr_rr
+
+V50 <- 144 # table 4, LV50 in https://www.sciencedirect.com/science/article/pii/S0165783624003023?via%3Dihub
+V95 <- 212 # table 4, LV95 in https://www.sciencedirect.com/science/article/pii/S0165783624003023?via%3Dihub
 
 PRM <- 0.25 # see p.36 in Fisher et al. 2025 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1001&context=fish_rar#page=108.08
 
-# McLennan et al. 2014 finds post-release survival after barotrauma treatment to be 88%, same for all depths, all sizes of fish.
-# Maggs et al. 2024 finds the hook site (lip, body or gut) and depth both sig. affects PRM.
-# Grixti et al. 2010 finds that PRM in deep waters (48%) is lower than shallow (97%).
+# -- McLennan et al. 2014 finds post-release survival after barotrauma treatment to be 88%, same for all depths, all sizes of fish.
+# -- Maggs et al. 2024 finds the hook site (lip, body or gut) and depth both sig. affects PRM.
+# -- Grixti et al. 2010 finds that PRM in deep waters (48%) is lower than shallow (97%).
 
 eq.init.fish <-  0.025 # this is equilibrium instantaneous fishing mortality?? a low level of fishing effort to apply to the hypothetical fish population so that it stabilises for the burn-in.
 
@@ -403,11 +406,20 @@ beta <- ((h-0.2)/(0.8*h*R0))
 # we have biomass across lengths from the previous step
 glimpse(length_mature_biomass)
 
+sel_at_length <- data.frame(
+  length      = bin_mids,
+  selectivity = 1 / (1 + exp(-log(19) * ((bin_mids - V50) / (V95 - V50))))
+)
+
+# collapse to age-based selectivity by weighting each age's length distribution
+# (length_age_matrix rows = age, cols = length bin; each row sums to 1)
+age_selectivity <- as.numeric(length_age_matrix %*% sel_at_length$selectivity)
+
 fished_pop_setup <- data.frame(age = mean_life_hist$age) %>% 
-  mutate(selectivity = 1 / (1 + exp(-log(19) * ((age - V50) / (V95 - V50)))), # selectivity at each age (this is probably a length-based process but the stock assessment reports age-based values for V50 and V95)
-         fishing_mortality = selectivity * eq.init.fish, # fishing mortality
+  mutate(selectivity = age_selectivity,
+         fishing_mortality = selectivity * eq.init.fish,
          total_mortality = fishing_mortality + M
-         )
+  )
 head(fished_pop_setup)
 
 # Calculate survival for the fished population
@@ -488,10 +500,11 @@ lapply(bins_to_plot, function(col) {
        main = paste("Length bin", col, "(", bin_mids[col], "mm)"))
 })
 
-## you can see as fish age, there's more and more uncertainty about their age. that's exactly what we want.
-## these fish form our starting population for the model
-## at the end of the year the spawning stock biomass of all females will be calculated to generate recruitment for the next year
-## alpha and Beta need to be recorded for use in the next step of the model
+# -- you can see as fish age, there's more and more uncertainty about their age. that's exactly what we want.
+# -- these fish form our starting population for the model
+# -- at the end of the year the spawning stock biomass of all females will be calculated to generate recruitment for the next year
+# -- alpha and Beta need to be recorded for use in the next step of the model
+
 
 ## Selectivity-retention for the fish in the model ----------------------------
 
@@ -501,30 +514,30 @@ lapply(bins_to_plot, function(col) {
 fished_pop_setup$selectivity
 
 # we'll use the selectivity-at-age to approximate a selectivity-at-length
-sel_at_age <- data.frame(age = mean_life_hist$age, selectivity = fished_pop_setup$selectivity)
-sel_at_length <- data.frame(
-  length     = bin_mids,
-  selectivity = NA
-)
-
-sel_at_age <- approx(
-  x = mean_life_hist$age,
-  y = fished_pop_setup$selectivity,
-  xout = mean_life_hist$age,
-  rule = 2
-)$y
-
-length_to_sel <- approxfun( # linear interpolation between selectivity-at-age and -at-length
-  x = mean_life_hist$length,
-  y = sel_at_age,
-  rule = 2
-)
-
-sel_at_length$selectivity <- length_to_sel(as.numeric(sel_at_length$length) + 5) # apply the interpolation to the length bins
-
-# manually fill bins that are too-big and too-small (they're not observed in the sel-at-age so need to be manually filled)
-sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 < min(mean_life_hist$length)] <- 0
-sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 > max(mean_life_hist$length)] <- 1
+# sel_at_age <- data.frame(age = mean_life_hist$age, selectivity = fished_pop_setup$selectivity)
+# sel_at_length <- data.frame(
+#   length     = bin_mids,
+#   selectivity = NA
+# )
+# 
+# sel_at_age <- approx(
+#   x = mean_life_hist$age,
+#   y = fished_pop_setup$selectivity,
+#   xout = mean_life_hist$age,
+#   rule = 2
+# )$y
+# 
+# length_to_sel <- approxfun( # linear interpolation between selectivity-at-age and -at-length
+#   x = mean_life_hist$length,
+#   y = sel_at_age,
+#   rule = 2
+# )
+# 
+# sel_at_length$selectivity <- length_to_sel(as.numeric(sel_at_length$length) + 5) # apply the interpolation to the length bins
+# 
+# # manually fill bins that are too-big and too-small (they're not observed in the sel-at-age so need to be manually filled)
+# sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 < min(mean_life_hist$length)] <- 0
+# sel_at_length$selectivity[as.numeric(sel_at_length$length) + 5 > max(mean_life_hist$length)] <- 1
 
 ## okay now to calculate things
 ret <- array(0,
@@ -563,8 +576,12 @@ for (YEAR in year_start:year_end) {
 }
 head(sel_ret)
 
-par(mfrow=c(1, 1))
+par(mfrow=c(2, 2))
 plot(sel_ret[,1], type = "l")
+plot(sel_ret[,50], type = "l")
+plot(sel_ret[,80], type = "l")
+plot(sel_ret[,120], type = "l")
+
 
 ## Saving files ---------------------------------------------------------------
 
