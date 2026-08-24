@@ -52,6 +52,7 @@ Rcpp::List mortality_function(
 
   return Rcpp::List::create(
     Rcpp::Named("fishing_mortality")      = total_f, // cell x length. this is just for checking that fishing mortality is reasonable
+    Rcpp::Named("fishing_mortality_by_fleet") = fleet_f,   // cell x length x fleet
     Rcpp::Named("tot_survived")           = tot_survived, // matrix of size max_cell x lengths
     Rcpp::Named("catch_numbers_by_fleet") = catch_numbers_by_fleet, // list of size n_fleets, with matrices of size max_cell x lengths
     Rcpp::Named("catch_weight_by_fleet")  = catch_weight_by_fleet // list of size n_fleets, with vecs of size max_cell
