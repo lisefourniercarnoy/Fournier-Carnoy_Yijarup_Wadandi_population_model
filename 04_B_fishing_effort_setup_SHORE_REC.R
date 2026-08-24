@@ -75,7 +75,8 @@ NCELL <- nrow(readRDS(file_water))
 
 water <- readRDS(file_water) |> st_transform(common_crs)
 cell_area <- water$cell_area / 1000000 # just cell area in km2
-cell_area <- as.numeric(water$cell_area)
+cell_area <- as.numeric(cell_area)
+
 
 ### 1.2 Temporal fishability --------------------------------------------------
 
@@ -84,8 +85,12 @@ cell_area <- as.numeric(water$cell_area)
 water <- readRDS(file_water) |> st_transform(common_crs)
 glimpse(water)
 
-water[[current_fleet]] <- ifelse(water[[current_fleet]] == "T", TRUE, 
-                                 ifelse(water[[current_fleet]] == "F", FALSE, water[[current_fleet]]))
+water[[current_fleet]] <- dplyr::case_when(
+  water[[current_fleet]] %in% c("T", "TRUE")  ~ TRUE,
+  water[[current_fleet]] %in% c("F", "FALSE") ~ FALSE,
+  TRUE ~ NA
+)
+
 NCELL <- nrow(water)
 
 # identify the important cells

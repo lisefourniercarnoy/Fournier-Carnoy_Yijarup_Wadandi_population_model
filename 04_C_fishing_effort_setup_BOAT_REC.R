@@ -129,7 +129,7 @@ ggsave("plots/script_plot_checks/04_C/04_C_fishable_depth_boat_rec.png", plot = 
 
 water <- readRDS(file_water) |> st_transform(common_crs)
 cell_area <- water$cell_area / 1000000 # just cell area in km2
-cell_area <- as.numeric(water$cell_area)
+cell_area <- as.numeric(cell_area)
 
 
 ### 1.3 Temporal fishability --------------------------------------------------
@@ -139,8 +139,12 @@ cell_area <- as.numeric(water$cell_area)
 water <- readRDS(file_water) |> st_transform(common_crs)
 glimpse(water)
 
-water[[current_fleet]] <- ifelse(water[[current_fleet]] == "T", TRUE, 
-                                 ifelse(water[[current_fleet]] == "F", FALSE, water[[current_fleet]]))
+water[[current_fleet]] <- dplyr::case_when(
+  water[[current_fleet]] %in% c("T", "TRUE")  ~ TRUE,
+  water[[current_fleet]] %in% c("F", "FALSE") ~ FALSE,
+  TRUE ~ NA
+)
+
 NCELL <- nrow(water)
 
 # identify the important cells
@@ -316,7 +320,7 @@ plot(water$geometry); plot(BR$geometry, col = colour_palette[6], pch = 16, add =
 BR <- st_as_sf(BR); BR <- BR %>% st_transform(common_crs) 
 
 # built or not
-ap_names <- unique(BR$name)
+ap_names <- sort(unique(BR$name))
 
 built <- array(NA, dim = c(year_end - year_start + 1, 12, length(ap_names)))
 
@@ -399,6 +403,7 @@ dim(network_matrix) # number of ramps x number of cells
 glimpse(network_matrix)
 access_dist <- as.data.frame(t(network_matrix))
 colnames(access_dist) <- BR$name
+access_dist <- access_dist[,order(colnames(access_dist))] # reorder columns alphabetically to avoid mis-assigning effort later.
 access_dist$ID <- water$ID
 access_dist <- access_dist / 1000
 head(access_dist) # this gives us each cell's distance to the access points
@@ -558,28 +563,27 @@ ggsave("plots/script_plot_checks/04_C/04_C_catchability_boat_rec.png", plot = p,
 
 # -- we know how much fishing there is (roughly) but we now need to distribute it across access points.
 
-### 4.1. Metro fishing effort -------------------------------------------------
 
-#### 4.1.1. Enter the overall effort values (boat days) -----------------------
+### 4.1 Enter the overall effort values (boat days) ---------------------------
 
 # obtain literature values
 years_full <- year_start:year_end
 g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
-  dplyr::select(c(YEAR, boat.days.north)) %>% # select only commercial fishing columns.
+  dplyr::select(c(YEAR, boat.days.west.coast)) %>% # select only commercial fishing columns.
   glimpse()
 
 # fill the unknown year values with linear interpolation
 annual_effort_boat <- g_sheets %>% 
   rename(year = YEAR,
-         boat_days = boat.days.north)
+         boat_days = boat.days.west.coast)
 annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
 
-# CHECK: commercial effort Metro
+# CHECK: commercial effort
 plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
      xlab = "Year", ylab = "Boat Days")
 
 
-#### 4.1.2 Split yearly fishing effort by month -------------------------------
+### 4.2 Split yearly fishing effort by month ----------------------------------
 
 # obtain the monthly distribution of fishing from the literature
 seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022 - THIS IS FOR RECREATIONAL FISHING BUT CANT FIND COMMERCIAL EQUIVALENT
@@ -591,7 +595,7 @@ seasonal_multipliers <- seasonal_multipliers / sum(seasonal_multipliers) # stand
 barplot(seasonal_multipliers, col = colour_palette[6], main = "distribution of yearly \nboat fishing effort by month in % \n(deduced from Ryan et al. 2022, fig. 21c)")
 
 # add monthly distribution back to the timeseries
-boat_effort_n <- expand.grid(
+boat_effort <- expand.grid(
   year = years_full,
   month = sprintf("%02d", 1:12)
 ) %>%
@@ -602,17 +606,16 @@ boat_effort_n <- expand.grid(
   ) %>%
   dplyr::select(year, month, monthly_effort)
 
-# CHECK: monthly commercial effort Metro
-ggplot(boat_effort_n, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
+# CHECK: monthly boat recreational effort
+ggplot(boat_effort, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
   geom_line(color = colour_palette[4]) +
   labs(title = paste0("Monthly Commercial Fishing Effort ", year_start, "-", year_end),
        x = "Date", y = "Monthly Boat Days") +
   theme_minimal() +
   geom_smooth(color = colour_palette[5])
 
-
 # proportion of each month's contribution to yearly boat days
-boat_month_prop <- boat_effort_n %>% 
+boat_month_prop <- boat_effort %>% 
   group_by(year) %>% 
   mutate(year_sum = sum(monthly_effort)) %>%
   mutate(month_prop = monthly_effort/year_sum) %>% 
@@ -623,32 +626,50 @@ boat_month_prop <- boat_month_prop %>%
   mutate(ave_month_prop = mean(month_prop))
 prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
-saveRDS(prop_month_ave, "data/output_data/04_A_commercial_metro_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
+saveRDS(prop_month_ave, "data/output_data/04_C_boat_rec_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
-#### 4.1.2 Distribute monthly effort into boat ramps --------------------------
 
+### 4.3 Distribute monthly effort into boat ramps -----------------------------
+
+# obtain access point information
 BR_n <- st_read(file_boat_ramps_n) %>% 
   st_transform(4283) %>%
   st_make_valid() %>%
-  mutate(build_year = 1900, # all commercial ramps start in 1900 cuz some of the build years dont make sense
-         build_mnth = 1     # assume Jan if unknown
-         ) %>%
+  mutate(build_year = as.numeric(build_year),
+         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
+         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
+         build_mnth = as.numeric(build_mnth)
+  ) %>%
+  dplyr::select(-c(com_prop, ABS_name)) |> 
   glimpse()
 BR_n <- BR_n[!st_is_empty(BR_n), ]
 
-plot(water$geometry); plot(BR_n$geometry, col = colour_palette[5], pch = 16, cex = 1, add = TRUE)
+BR_w <- st_read(file_boat_ramps_w) %>% 
+  st_transform(4283) %>%
+  st_make_valid() %>%
+  mutate(build_year = as.numeric(build_year),
+         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
+         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
+         build_mnth = as.numeric(build_mnth)
+  ) %>%
+  dplyr::select(-c(X1943, X1965, X1981, X2024, rec_visits, visit_2024, com_prop)) |> 
+  glimpse()
+BR_w <- BR_w[!st_is_empty(BR_w), ]
 
+BR <- rbind(st_transform(BR_n, common_crs), st_transform(BR_w, common_crs)) |> 
+  glimpse()
 
-# distribute effort across all ramps, across time
-boat_effort_n <- boat_effort_n %>%
+# distribute effort across ramps and time
+glimpse(boat_effort)
+boat_effort <- boat_effort %>%
   mutate(date = as.Date(paste(year, month, "01", sep = "-"))) # make a column with year and month of ramp build
-ramp_effort_n <- expand.grid(
-  ramp_index = 1:nrow(BR_n),
-  date = boat_effort_n$date
+ramp_effort <- expand.grid(
+  ramp_index = 1:nrow(BR),
+  date = boat_effort$date
 ) %>%
   mutate(
-    build_date = as.Date(paste(BR_n$build_year[ramp_index], BR_n$build_mnth[ramp_index], "01", sep = "-")),
-    ramp_name = BR_n$name[ramp_index]
+    build_date = as.Date(paste(BR$build_year[ramp_index], BR$build_mnth[ramp_index], "01", sep = "-")),
+    ramp_name = BR$name[ramp_index]
   ) %>%
   filter(date >= build_date) %>%
   mutate(
@@ -657,134 +678,9 @@ ramp_effort_n <- expand.grid(
     ramp_weight = logistic_growth
   )
 
-# Merge in monthly effort
-ramp_effort_n <- ramp_effort_n %>%
-  left_join(boat_effort_n, by = "date") %>%
-  group_by(date) %>%
-  mutate(
-    total_weight = sum(ramp_weight),
-    adjusted_effort = ifelse(total_weight > 0, monthly_effort * (ramp_weight / total_weight), 0),
-    year = year(date),
-    month = month(date)
-  ) %>%
-  ungroup() %>%
-  dplyr::select(year, month, boat_ramp = ramp_name, adjusted_effort)
-
-# Check total per month equals monthly_effort
-check_totals <- ramp_effort_n %>%
-  group_by(year, month) %>%
-  summarise(total_effort = sum(adjusted_effort), .groups = "drop") %>%
-  left_join(boat_effort_n %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
-  mutate(diff = abs(total_effort - monthly_effort))
-summary(check_totals$diff)  # should be near zero
-
-# check each boat ramp is populated correctly
-ggplot(ramp_effort_n, aes(x=year, y=adjusted_effort)) +
-  geom_line(color = colour_palette[5], lwd = 1) +
-  facet_wrap(~boat_ramp, ncol = 2)
-
-
-### 4.2 Wadandi fishing effort ------------------------------------------------
-
-#### 4.2.1 Enter the overall effort values (boat days) ------------------------
-
-# obtain literature values
-years_full <- year_start:year_end
-g_sheets <- read.csv("data/input_data/YIJARUP - Fishing effort reconstruction - FINAL_fishing_effort (14-07-2026).csv", skip = 3) %>% 
-  dplyr::select(c(YEAR, boat.days.wadandi)) %>% # select only commercial fishing columns.
-  glimpse()
-
-# fill the unknown year values with linear interpolation
-annual_effort_boat <- g_sheets %>% 
-  rename(year = YEAR,
-         boat_days = boat.days.wadandi)
-annual_effort_boat$boat_days <- as.vector(approx(annual_effort_boat$boat_days, n = nrow(annual_effort_boat))$y)
-
-# CHECK: commercial effort Wadandi
-plot(annual_effort_boat$year, annual_effort_boat$boat_days, type = "l", col = colour_palette[5], lwd = 4,
-     xlab = "Year", ylab = "Boat Days")
-
-
-#### 4.2.2 Split yearly fishing effort by month -------------------------------
-
-# obtain the monthly distribution of fishing from the literature
-seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022 - THIS IS FOR REC FISHING BUT CANT FIND COMM EQUIVALENT
-  "01" = 0.14, "02" = 0.081, "03" = 0.097, "04" = 0.081,
-  "05" = 0.033, "06" = 0.033, "07" = 0.033, "08" = 0.033,
-  "09" = 0.033, "10" = 0.065, "11" = 0.11, "12" = 0.26
-)
-seasonal_multipliers <- seasonal_multipliers / sum(seasonal_multipliers) # standardise so it adds up to 1
-barplot(seasonal_multipliers, col = colour_palette[6], main = "distribution of yearly \nboat fishing effort by month in % \n(deduced from Ryan et al. 2022, fig. 21c)")
-
-# add monthly distribution back to the timeseries
-boat_effort_w <- expand.grid(
-  year = years_full,
-  month = sprintf("%02d", 1:12)
-) %>%
-  arrange(year, month) %>%
-  mutate(
-    annual_boat_days = rep(annual_effort_boat$boat_days, each = 12),
-    monthly_effort = annual_boat_days * seasonal_multipliers[month]
-  ) %>%
-  dplyr::select(year, month, monthly_effort)
-
-# CHECK: monthly commercial effort Wadandi
-ggplot(boat_effort_w, aes(x = as.Date(paste(year, month, "01", sep = "-")), y = monthly_effort)) +
-  geom_line(color = colour_palette[4]) +
-  labs(title = paste0("Monthly Boat Fishing Effort ", year_start, "-", year_end),
-       x = "Date", y = "Monthly Boat Days") +
-  theme_minimal() +
-  geom_smooth(color = colour_palette[5])
-
-# proportion of each month's contribution to yearly boat days - as of 21.01.2026 this is the same in W as in N.
-boat_month_prop <- boat_effort_w %>% 
-  group_by(year) %>% 
-  mutate(year_sum = sum(monthly_effort)) %>%
-  mutate(month_prop = monthly_effort/year_sum) %>% 
-  dplyr::select(-year_sum)
-
-boat_month_prop <- boat_month_prop %>% 
-  group_by(month) %>% 
-  mutate(ave_month_prop = mean(month_prop))
-prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
-
-plot(prop_month_ave)
-saveRDS(prop_month_ave, "data/output_data/04_A_commercial_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
-
-
-#### 4.2.3 Distribute monthly effort into boat ramps --------------------------
-
-# effort by boat_ramp (wadandi)
-BR_w <- st_read(file_boat_ramps_w) %>% 
-  st_transform(4283) %>%
-  st_make_valid() %>%
-  mutate(build_year = as.numeric(build_year),
-         build_year = ifelse(is.na(build_year), year_start, build_year), # fill in missing dates with the start year
-         build_mnth = ifelse(is.na(build_mnth), 1, build_mnth),     # assume Jan if unknown
-         ) %>%
-  glimpse()
-BR_w <- BR_w[!st_is_empty(BR_w), ]
-
-# distribute effort across all ramps, across time
-boat_effort_w <- boat_effort_w %>%
-  mutate(date = as.Date(paste(year, month, "01", sep = "-"))) # make a column with year and month of ramp build
-ramp_effort_w <- expand.grid(
-  ramp_index = 1:nrow(BR_w),
-  date = boat_effort_w$date
-) %>%
-  mutate(
-    build_date = as.Date(paste(BR_w$build_year[ramp_index], BR_w$build_mnth[ramp_index], "01", sep = "-")),
-    ramp_name = BR_w$name[ramp_index]
-  ) %>%
-  mutate(
-    months_since_build = interval(build_date, date) %/% months(1),
-    logistic_growth = 1 / (1 + exp(-0.1 * (months_since_build - 60))),
-    ramp_weight = logistic_growth
-  )
-
 # merge in monthly effort
-ramp_effort_w <- ramp_effort_w %>%
-  left_join(boat_effort_w, by = "date") %>%
+ramp_effort <- ramp_effort %>%
+  left_join(boat_effort, by = "date") %>%
   group_by(date) %>%
   mutate(
     total_weight = sum(ramp_weight),
@@ -796,29 +692,25 @@ ramp_effort_w <- ramp_effort_w %>%
   dplyr::select(year, month, boat_ramp = ramp_name, adjusted_effort)
 
 # check total per month equals monthly_effort
-check_totals <- ramp_effort_w %>%
+check_totals <- ramp_effort %>%
   group_by(year, month) %>%
   summarise(total_effort = sum(adjusted_effort), .groups = "drop") %>%
-  left_join(boat_effort_w %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
+  left_join(boat_effort %>% mutate(year = year(date), month = month(date)), by = c("year", "month")) %>%
   mutate(diff = abs(total_effort - monthly_effort))
 summary(check_totals$diff)  # should be near zero
 
 # check each boat ramp is populated correctly
-ggplot(ramp_effort_w, aes(x=year, y=adjusted_effort)) +
+ggplot(ramp_effort, aes(x = year, y = adjusted_effort)) +
   geom_line(color = colour_palette[5], lwd = 1) +
-  facet_wrap(~boat_ramp, ncol = 2)
-
-
-# okay combine into a month x access point x year cube
-ramp_effort_n
-ramp_effort_w
-access_point_effort <- rbind(ramp_effort_n, ramp_effort_w)
+  facet_wrap(~boat_ramp, ncol = 5)
 
 # cut up this big unwieldy dataframe into a cube
-access_point_effort <- access_point_effort %>% 
+access_point_effort <- ramp_effort %>% 
   pivot_wider(names_from = boat_ramp,
-              values_from = adjusted_effort) %>% 
+              values_from = adjusted_effort,
+              values_fill = 0) %>% 
   as.data.frame()
+
 access_point_effort <- access_point_effort %>%
   dplyr::select(-year, -month) %>%
   {abind::abind(split(., access_point_effort$year), along = 3)}
@@ -826,6 +718,7 @@ access_point_effort <- access_point_effort %>%
 # rename dimension names so they're consistent with the rest of the objects used in the function.
 dimnames(access_point_effort)[[1]] <- c(1:12)
 dimnames(access_point_effort)[[3]] <- c(1:length(dimnames(access_point_effort)[[3]]))
+access_point_effort <- access_point_effort[,order(colnames(access_point_effort)),] # arrange access point columns alphabetically to match other objects
 
 # check that utility and access_point_effort have the same order of access point
 names(access_dist %>% dplyr::select(!ID)) == dimnames(access_point_effort)[[2]]
@@ -837,8 +730,8 @@ dimnames(access_point_effort)[[2]] <- c(1:length(dimnames(access_point_effort)[[
 ## 5. Create a list to use in the C++ function --------------------------------
 
 # little details to include in the final list
-coef_values <- tibble(expected_catch = 1,
-                      expected_catch_sq = 1
+coef_values <- tibble(expected_catch = 1.5,
+                      expected_catch_sq = -1.171
 ) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing
 
 fishing_info_list <- list(catchability, 
@@ -862,7 +755,7 @@ saveRDS(fishing_info_list, "data/output_data/04_C_boat_rec_fishing_info.rds")
 # -- to stabilise the population, we need to run the function with a small amount of fishing (smaller than what we start with)
 
 # obtain the relative contribution of each boat ramp
-effort_prop <- rbind(ramp_effort_n, ramp_effort_w) %>%
+effort_prop <- ramp_effort %>%
   dplyr::filter(year == 1900, 
                 month == 1) %>% 
   dplyr::mutate(com_prop = adjusted_effort/sum(adjusted_effort)) %>% 
