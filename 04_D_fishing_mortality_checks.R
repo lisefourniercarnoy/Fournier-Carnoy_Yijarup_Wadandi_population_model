@@ -4,11 +4,11 @@
 # Data:    Values from the literature
 # Task:    Set up populations
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    June 2026
+# Date:    August 2026
 
 # -----------------------------------------------------------------------------
 
-# Status: First checks
+# Status: 
 
 # -----------------------------------------------------------------------------
 
@@ -19,14 +19,15 @@ rm(list = ls())
 library(tidyverse)
 library(RColorBrewer)
 
-# fishing mortality F = fishing effort E * catchability Q. 
-# F is the proportion of the population which is harvested. 
+# -- fishing mortality F = fishing effort E * catchability q. 
+# -- F is the proportion of the population which is harvested. 
 
-# E is findable (data from papers, see historical reconstructions in 04_A to 04_C, section 4)
-# F is estimated in the stock assessment (see Fig. 3.14 in https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1001&context=fish_rar)
-# Q is the only one that is unknowable, and therefore calibrate-able.
+# -- E is findable (data from papers, see historical reconstructions in 04_A to 04_C, section 4)
+# -- F is estimated in the stock assessment (see Fig. 3.14 in https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1001&context=fish_rar)
+# -- q is the only one that is unknowable, and therefore calibrate-able.
 
-## read in files --------------------------------------------------------------
+
+## 0. Read in files -----------------------------------------------------------
 
 water   <- readRDS("data/output_data/02_watergrid.rds")
 dat_com <- readRDS("data/output_data/04_A_commercial_fishing_info.rds")
@@ -34,7 +35,8 @@ dat_brec <- readRDS("data/output_data/04_C_boat_rec_fishing_info.rds")
 dat_srec <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds")
 names(dat_com)
 
-## target F from stock assessment ---------------------------------------------
+
+## 1. Target F from stock assessment ------------------------------------------
 
 full_years <- 1975:2024
 F_ss <- read.csv("data/input_data/digitised_plots_for_checking/F_digitised_from_stock_assessment.csv") %>%
@@ -45,7 +47,8 @@ F_ss <- data.frame(
 )
 plot(F_ss, type = "l", lwd = 2, col = "steelblue")
 
-## COMMERCIAL fishing mortality -----------------------------------------------
+
+## 2. COMMERCIAL fishing mortality --------------------------------------------
 
 # obtain 1 fishing effort value per year
 c_effort <- apply(dat_com$fishing_days, 3, sum)  # vector, length 125
@@ -89,7 +92,7 @@ F_commercial <- data.frame(
 plot(F_commercial$year[75:125], F_commercial$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
 
 
-## BOAT REC fishing mortality -------------------------------------------------
+## 3. BOAT REC fishing mortality ----------------------------------------------
 
 # obtain 1 fishing effort value per year
 b_effort <- apply(dat_brec$fishing_days, 3, sum)  # vector, length 125
@@ -130,7 +133,7 @@ F_boat_rec <- data.frame(
 plot(F_boat_rec$year[75:125], F_boat_rec$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
 
 
-## SHORE REC effort -----------------------------------------------------------
+## 4. SHORE REC effort --------------------------------------------------------
 
 s_effort <- apply(dat_srec$fishing_days, 3, sum)  # vector, length 125
 
@@ -151,7 +154,7 @@ F_shore_rec <- data.frame(
 plot(F_shore_rec[75:125,], type = "l", col = "steelblue", lwd = 2)
 
 
-## see overall ----------------------------------------------------------------
+## 5. See overall -------------------------------------------------------------
 
 ggplot() + # this should somewhat match Fisher et al. 2025, figure 3.8d, shore rec excluded
   geom_line(data = F_commercial[75:125,], aes(x = year, y = F), linewidth = 1.5, linetype = "dashed") +
@@ -165,17 +168,11 @@ F_all <- (F_shore_rec$F[75:125] + F_boat_rec$F[75:125] + F_commercial$F[75:125])
 plot(x = F_ss$x, F_ss$y, lwd = 2, col = "steelblue", type = "l")
 lines(x = 1975:2025, y = F_all, col = "firebrick", lwd = 2)
 
-# make sure the whole time period makes sense
-ggplot() + # this should somewhat match Fisher et al. 2025, figure 3.8d, shore rec excluded
-  geom_line(data = F_commercial, aes(x = year, y = F), linewidth = 1.5, linetype = "dashed") +
-  geom_line(data = F_boat_rec, aes(x = year, y = F), linewidth = 1.5, linetype = "dotted") +
-  geom_line(data = F_shore_rec, aes(x = year, y = F), linewidth = 1.5, linetype = "solid") +
-  theme_minimal()
 
-
-
-## save outputs to use in 04_A-C ----------------------------------------------
+## 6. Save outputs to use in 04_A-C -------------------------------------------
 
 saveRDS(Q_commercial, "data/output_data/04_D_commercial_q.rds")
 saveRDS(Q_boat_rec, "data/output_data/04_D_boat_rec_q.rds")
 saveRDS(Q_shore_rec, "data/output_data/04_D_shore_rec_q.rds")
+
+### END ###
