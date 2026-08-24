@@ -41,37 +41,30 @@ Rcpp::List run_full_model_function(
   
   // 0a. create master objects ------------------------------------------------
   
-  // these are objects that only need to be computed once per year. this makes the function go faster
-  int n_fleets = fleet_names.size();
-  arma::vec   january_recruits(max_cell, arma::fill::zeros); // this is for a sum of recruits of all spawning months. gets renewed every year.
-  arma::mat   master_SSB(max_cell, 12, arma::fill::zeros);        // SSB per cell x month (filled only in spawning months)
-  arma::cube  next_pop(max_cell, n_lengths, max_age, arma::fill::zeros); // object to put survivors and recruits in 
-  
-  // create objects to check outputs in R
-  Rcpp::List  catch_weight(n_fleets); // this is to give the pseudo-effort function 
-  Rcpp::List  fleet_fishing_effort(n_fleets);
-  arma::cube              master_effort_by_fleet(max_cell, 12, n_fleets, arma::fill::zeros); // format (cell, month, fleet) 
-  arma::field<arma::mat>  master_catch_weight_total(n_fleets); // format cell x age x fleet
-  arma::field<arma::cube> master_catch_number_total(n_fleets); // format cell x length x age x fleet
-  arma::vec yearly_catch_total(n_fleets, arma::fill::zeros); // vec of length n_fleet
-  
-  for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
-    master_catch_number_total(FLEET) = arma::cube(max_cell, n_lengths, max_age, arma::fill::zeros);
-    master_catch_weight_total(FLEET) = arma::mat(max_cell, max_age, arma::fill::zeros);
-    
-    catch_weight[FLEET] = arma::vec(max_cell, arma::fill::ones);
-    // fleet_fishing_effort[FLEET] = arma::vec(max_cell, arma::fill::ones); // used to be for the pseudo function, currently not used
-  } // fill this with zeroes to start with, so that they're the right dimensions.
-  
-  arma::field<arma::cube> master_pop_survived(12); // format cell x length x age x month
-  for (int m = 0; m < 12; m++) {
-    master_pop_survived(m) = arma::cube(max_cell, n_lengths, max_age, arma::fill::zeros);
-  } // fill things with zeroes
-  
-  arma::field<arma::cube> master_current_pop(12); // format cell x length x age, per month
+  // 1 where is the fish every month x year 
+  arma::cube next_pop(max_cell, n_lengths, max_age, arma::fill::zeros); // function object, to put survivors and recruits in 
+
+  arma::field<arma::cube> master_current_pop(12); // format month x (cell x length x age)
   for (int m = 0; m < 12; m++) {
     master_current_pop(m) = arma::cube(max_cell, n_lengths, max_age, arma::fill::zeros);
-  }
+  }  
+  
+  // 2 where is the effort every month x year
+  int n_fleets = fleet_names.size();
+  Rcpp::List fleet_fishing_effort(n_fleets); // function object
+  arma::cube master_effort_by_fleet(max_cell, 12, n_fleets, arma::fill::zeros); // format cell x month x fleet
+  
+  // 3 how much catch is there every year
+  arma::vec master_yearly_catch(n_fleets, arma::fill::zeros); // vec of length n_fleet
+  arma::cube master_catch_by_length(max_cell, n_lengths, n_fleets, arma::fill::zeros); // cell x lengths x fleet, this is an important output to understand whether shore fishers are catching less fish over time
+    
+  // 4 spawning biomass every year
+  arma::vec january_recruits(max_cell, arma::fill::zeros); // function object, sum of recruits of all spawning months. gets renewed every year.
+  double master_SSB = 0.0; // single value (should be the mean SSB across spawning months)
+  
+  // 5 fishing mortality
+  arma::mat master_F(12, n_fleets, arma::fill::zeros); 
+  
   
   // 0b. extract objects that need to be calculated only once per year --------
   
@@ -80,12 +73,14 @@ Rcpp::List run_full_model_function(
   std::vector<arma::mat> catchability_by_fleet(n_fleets);
   for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
     Rcpp::List fl = fleet_info[FLEET];
-    catchability_by_fleet[FLEET] = Rcpp::as<arma::cube>(fl["catchability"]).slice(YEAR);
-    // now a max_cell x 12 matrix; index .col(MONTH) inside the loop
-  }
+    catchability_by_fleet[FLEET] = Rcpp::as<arma::cube>(fl["catchability"]).slice(YEAR); // becomes a list of fleet x (max_cell x 12)
+    }
+  
   std::vector<bool> is_spawn_month(12, false);
   for (arma::uword k = 0; k < spawning_months.n_elem; k++)
     is_spawn_month[static_cast<int>(spawning_months(k)) - 1] = true;
+  arma::vec ha_weight = arma::pow(weight, ha_scaling);
+  arma::vec maturity_x_haweight = maturity % ha_weight;
   
   
   // START OF THE FUNCTION HERE ===============================================
@@ -147,13 +142,8 @@ Rcpp::List run_full_model_function(
     
     
     next_pop.zeros(); // start with a fresh object, which we will fill for this month, to give to the next month.
-    for (int FLEET = 0; FLEET < n_fleets; FLEET++) {catch_weight[FLEET] = arma::vec(max_cell, arma::fill::zeros);} // reset the catch_weight this month, otherwise you're accumulating catch across 12 months
-    
-    //CHECK
-    double pop_before_mortality = arma::accu(current_pop);
-    double pop_after_mortality = 0.0; // will accumulate across ages below
-    
-    
+
+
       // 3. move fish -----------------------------------------------------------
       
       for (int AGE = 0; AGE < max_age; AGE++) {
@@ -174,9 +164,9 @@ Rcpp::List run_full_model_function(
 
       
       // 4. kill fish -----------------------------------------------------------
-      
+
       for (int AGE = 0; AGE < max_age; AGE++) {
-        
+      
       Rcpp::List mortality_outputs = mortality_function(AGE, // for every aged fish, they are exposed to natural and fishing mortalities
                                                         MONTH,
                                                         max_cell,
@@ -188,26 +178,24 @@ Rcpp::List run_full_model_function(
                                                         fleet_fishing_effort, // from the effort_function - list of size n_fleets, made of vectors of size n_cell,
                                                         catchability_by_fleet);
       arma::mat survived = Rcpp::as<arma::mat>(mortality_outputs["tot_survived"]);
-      Rcpp::List F = mortality_outputs["fishing_mortality"];
-      
-      // also fill the master outputs
-      master_pop_survived(MONTH).slice(AGE) = survived;
-      
+
       // extract the catch
-      Rcpp::List catch_weights_this_age = Rcpp::as<Rcpp::List>(mortality_outputs["catch_weight_by_fleet"]);
-      Rcpp::List catch_numbers_this_age = Rcpp::as<Rcpp::List>(mortality_outputs["catch_numbers_by_fleet"]);
+      Rcpp::List catch_weights_this_age = Rcpp::as<Rcpp::List>(mortality_outputs["catch_weight_by_fleet"]); // list of n_fleets x (cell x lengths)
+      Rcpp::List catch_numbers_this_age = Rcpp::as<Rcpp::List>(mortality_outputs["catch_numbers_by_fleet"]); // list of n_fleets x (cell x lengths)
+      
+      // and the fishing mortality
+      arma::cube F_by_fleet_this_age = Rcpp::as<arma::cube>(mortality_outputs["fishing_mortality_by_fleet"]); // cell x length x fleet
+      for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
+        master_F(MONTH, FLEET) += arma::accu(F_by_fleet_this_age.slice(FLEET));
+      }
       
       for (int FLEET = 0; FLEET < n_fleets; FLEET++) { // for each fleet...
         
-        arma::vec accum = Rcpp::as<arma::vec>(catch_weight[FLEET]);
-        accum += Rcpp::as<arma::vec>(catch_weights_this_age[FLEET]);
-        catch_weight[FLEET] = accum; // update the catch so that next month, the effort can be distributed accordingly
+        master_yearly_catch[FLEET] += arma::accu(Rcpp::as<arma::vec>(catch_weights_this_age[FLEET])); // accumulate the catch of every month, and sum over cells.
         
-        // and record it
-        master_catch_weight_total(FLEET).col(AGE) = Rcpp::as<arma::vec>(catch_weights_this_age[FLEET]);
-        master_catch_number_total(FLEET).slice(AGE) = Rcpp::as<arma::mat>(catch_numbers_this_age[FLEET]);
+        master_catch_by_length.slice(FLEET) += Rcpp::as<arma::mat>(catch_numbers_this_age[FLEET]); // accumulate the catch of every month, but keep the spatial structure
         
-      } // record how much catch there is this month and where.
+        } // record how much catch there is this month and where.
       
       
       // 5. grow fish ---------------------------------------------------------
@@ -226,13 +214,12 @@ Rcpp::List run_full_model_function(
     
     // --- CHECK catch of each fleet ---
 
-    Rcpp::Rcout << "  pop before mortality: " << pop_before_mortality << std::endl;
+    Rcpp::Rcout << " total pop: " << arma::accu(next_pop) << std::endl;
     Rcpp::Rcout << " | total catch: " ;
     for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
-      Rcpp::Rcout << arma::accu((Rcpp::as<arma::vec>(catch_weight[FLEET]))) << " " << std::endl;
-      yearly_catch_total[FLEET] = arma::accu((Rcpp::as<arma::vec>(catch_weight[FLEET])));
-    }
-    yearly_catch_total += yearly_catch_total;
+      Rcpp::Rcout << master_yearly_catch[FLEET] << " ";
+      }
+    
     Rcpp::Rcout << "fish successfully killed, and grown - ";
     
     
@@ -259,33 +246,25 @@ Rcpp::List run_full_model_function(
                   << " sum(january_recruits)=" << arma::sum(january_recruits)
                   << std::endl;
       
-    } // end of spawning MONTH loop
+      double ssb_this_month = 0.0;
+      for (int AGE = 0; AGE < max_age; AGE++) {
+        ssb_this_month += arma::accu(next_pop.slice(AGE) * maturity_x_haweight);
+      }
+      master_SSB += PF * ssb_this_month / spawning_months.n_elem;      
     
-    Rcpp::Rcout << "fish spawned." << std::endl;
+      Rcpp::Rcout << "fish spawned." << std::endl;
+    
+    } // end of spawning MONTH loop
     
     
     // 7. handoff the processed population to next month ----------------------
     
-    if (MONTH < 11) {
-      current_pop = next_pop;
-    }
-    
+    current_pop = next_pop;
     master_current_pop(MONTH) = current_pop; // cell x length x age snapshot for this month
+    
     
   } // end of the MONTH loop
   
-  // compute SSB per spawning month
-  arma::vec ha_weight = arma::pow(weight, ha_scaling);
-  arma::vec maturity_x_haweight = maturity % ha_weight;
-  arma::vec master_SSB_total(max_cell, arma::fill::zeros); // summed across spawning months
-  
-  for (arma::uword k = 0; k < spawning_months.n_elem; k++) {
-    int sp_month = static_cast<int>(spawning_months(k)) - 1; // zero-indexed
-    arma::cube pop_this_month = master_pop_survived(sp_month); // cell x length x age
-    for (int AGE = 0; AGE < max_age; AGE++) {
-      master_SSB_total += PF * (pop_this_month.slice(AGE) * maturity_x_haweight);
-    }
-  }
   
   next_pop.slice(0).col(0) = january_recruits; // assign recruits to the youngest age & smallest length of the next year
   
@@ -293,19 +272,16 @@ Rcpp::List run_full_model_function(
   
   
   return Rcpp::List::create(
+    Rcpp::Named("next_pop")           = next_pop, // cube (cell x lengt), needed to hand the december population to January of the next year in R 
+    Rcpp::Named("master_current_pop") = master_current_pop, // month x (cell x length x age)
+
+    Rcpp::Named("effort_by_fleet")    = master_effort_by_fleet, // cell x month x fleet
     
-    // also add master outputs
-    Rcpp::Named("current_pop") = current_pop, // outputs - 
-    Rcpp::Named("next_pop") = next_pop, // outputs - 
-    Rcpp::Named("master_current_pop") = master_current_pop, // checking object
+    Rcpp::Named("yearly_catch")       = master_yearly_catch, // vec of size n_fleet
+    Rcpp::Named("catch_by_length")    = master_catch_by_length,
     
-    Rcpp::Named("spawning_biomass")      = master_SSB_total,  // cell, summed across spawning months
+    Rcpp::Named("fishing_mortality")  = master_F, // month x fleet
     
-    Rcpp::Named("catch_number_by_fleet") = master_catch_number_total, // cell x month x fleet
-    Rcpp::Named("catch_weight_by_fleet") = master_catch_weight_total, // cell x month x fleet
-    Rcpp::Named("yearly_catch_total") = yearly_catch_total,
-    Rcpp::Named("master_pop_survived") = master_pop_survived, // month (cell x length x age)
-    Rcpp::Named("effort_by_fleet") = master_effort_by_fleet // NEW: cell x month x fleet
-  
+    Rcpp::Named("spawning_biomass")   = master_SSB  // single value
   );
 }
