@@ -220,7 +220,7 @@ Rcpp::List run_full_model_function(
       Rcpp::Rcout << master_yearly_catch[FLEET] << " ";
       }
     
-    Rcpp::Rcout << "fish successfully killed, and grown - ";
+    Rcpp::Rcout << "fish successfully killed, and grown - " << std::endl;
     
     
     // 6. recruit fish --------------------------------------------------------

@@ -29,7 +29,7 @@ Rcpp::List mortality_function(
     arma::mat F = (effort_f % catchability_now) * sel_this_year.t(); // instantaneous fishing mortality(AGE) = fishing effort(cells) * catchability(cells) * selectivity(all lengths)
     fleet_f.slice(FLEET) = F;
     total_f += F;  // accumulate total F, as in https://academic.oup.com/icesjms/article/78/6/2043/6317566 -- sum of all fleets' fishing mortalities.
-    
+
   }
 
   // 2. calculate total survived fish (not fleet-specific)

@@ -265,6 +265,49 @@ plot(fitted_models$sand, page = 1, residuals = T, cex = 5)
 plot(fitted_models$seagrass, page = 1, residuals = T, cex = 5)
 
 
+### 4.1 Make output tables ----------------------------------------------------
+
+library(flextable)
+
+make_gam_table <- function(model, habitat_name) {
+  s <- summary(model)
+  
+  param_df <- as.data.frame(s$p.table)
+  param_df$term <- rownames(param_df)
+  names(param_df)[names(param_df) == "Pr(>|z|)"] <- "p_value"
+  
+  smooth_df <- as.data.frame(s$s.table)
+  smooth_df$term <- rownames(smooth_df)
+  names(smooth_df)[names(smooth_df) == "p-value"] <- "p_value"
+  
+  combined <- bind_rows(param_df, smooth_df)
+  combined$habitat <- habitat_name
+  combined
+}
+
+reef_tbl     <- make_gam_table(fitted_models$reef, "Reef")
+sand_tbl     <- make_gam_table(fitted_models$sand, "Sand")
+seagrass_tbl <- make_gam_table(fitted_models$seagrass, "Seagrass")
+
+all_tbl <- bind_rows(reef_tbl, sand_tbl, seagrass_tbl) %>%
+  mutate(
+    Estimate   = round(Estimate, 3),
+    `Std. Error` = round(`Std. Error`, 3),
+    `z value`  = round(`z value`, 2),
+    edf        = round(edf, 2),
+    Ref.df     = round(Ref.df, 2),
+    Chi.sq     = round(Chi.sq, 1),
+    p_value    = ifelse(p_value < 0.001, "< 0.001", format(round(p_value, 3), scientific = FALSE))
+  ) %>%
+  dplyr::select(habitat, term, Estimate, `Std. Error`, `z value`, edf, Ref.df, Chi.sq, p_value)
+
+ft <- flextable(all_tbl)
+ft <- autofit(ft)
+ft
+
+save_as_docx(ft, path = "plots/script_plot_checks/01_A/01_A_habitat_gam_summary.docx")
+
+
 ## 5. Predict, rasterise and plot ---------------------------------------------
 
 # -- for each raster cell in the 250m resolution raster, we'll predict each habitat, based on the bathy and derivatives
