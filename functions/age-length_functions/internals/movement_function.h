@@ -3,12 +3,13 @@ arma::mat movement_function(const int AGE, // the current age, set in the master
                             const int max_cell, // the max number of cells
                             const arma::mat& adult_movement_prob, // adult movement probabilities (>375mm) (from each cell to each cell)
                             const arma::mat& juv_movement_prob, // juvenile movement probabilities (<375mm) (from each cell to each cell)
-                            const arma::mat& spawn_movement_prob, // adult spawner movement probabilities (>625mm) (from each cell to each cell)
+                            const arma::mat& small_spawn_movement_prob, // small adult spawner movement probabilities (<625mm) (from each cell to each cell)
+                            const arma::mat& large_spawn_movement_prob, // large adult spawner movement probabilities (>625mm) (from each cell to each cell)
                             const arma::mat& current_pop_AGE // numbers of fish in each cell x length x age
 ) {
   
   const int adult_length_bin = 9 - 1; // length bin n.8 is the one with a midpoint of 375  (we'll call that the last juvenile bin). zero-index it!
-  const int spawning_length_bin = 13 - 1; // length bin n.13 is the one with a midpoint of 625  (we'll call that the first adult-spawner bin). zero-index it!
+  const int large_spawning_length_bin = 13 - 1; // length bin n.13 is the one with a midpoint of 625  (we'll call that the first adult-spawner bin). zero-index it!
   
   arma::mat pop_after(current_pop_AGE.n_rows, current_pop_AGE.n_cols, arma::fill::zeros);
   
@@ -22,8 +23,12 @@ arma::mat movement_function(const int AGE, // the current age, set in the master
   
   // spawning movement
   if (MONTH >= 9) { // for months October onwards,
-    pop_after.cols(spawning_length_bin, pop_after.n_cols - 1) = // for all adult-spawner bins ...
-      spawn_movement_prob.t() * current_pop_AGE.cols(spawning_length_bin, current_pop_AGE.n_cols - 1); // ... move them (this overrides the adult movement just before)
+    pop_after.cols(adult_length_bin, large_spawning_length_bin - 1) = // for all small adult-spawner bins ...
+      small_spawn_movement_prob.t() * current_pop_AGE.cols(adult_length_bin, large_spawning_length_bin - 1); // ... move them (this overrides the adult movement just before)
+    
+    pop_after.cols(large_spawning_length_bin, pop_after.n_cols - 1) = // for all large adult-spawner bins ...
+      large_spawn_movement_prob.t() * current_pop_AGE.cols(large_spawning_length_bin, current_pop_AGE.n_cols - 1); // ... move them (this overrides the adult movement just before)
+    
   }
   
   // adult_movement is the original dataframe, giving the probability of moving *from cell_x to cell_y

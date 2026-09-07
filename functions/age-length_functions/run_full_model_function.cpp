@@ -32,7 +32,8 @@ Rcpp::List run_full_model_function(
     
     arma::mat adult_movement_prob, // max_cell x max_cell
     arma::mat juv_movement_prob, // max_cell x max_cell
-    arma::mat spawn_movement_prob, // max_cell x max_cell
+    arma::mat small_spawn_movement_prob, // max_cell x max_cell
+    arma::mat large_spawn_movement_prob, // max_cell x max_cell
     
     Rcpp::CharacterVector fleet_names,
     Rcpp::List fleet_info
@@ -153,7 +154,8 @@ Rcpp::List run_full_model_function(
                                                      max_cell,
                                                      adult_movement_prob, // ncell x ncell
                                                      juv_movement_prob, // ncell x ncell
-                                                     spawn_movement_prob, // ncell x ncell
+                                                     small_spawn_movement_prob, // ncell x ncell
+                                                     large_spawn_movement_prob, // max_cell x max_cell
                                                      current_pop.slice(AGE)); // ncell x nlengths
 
       current_pop.slice(AGE) = moved_population; // cell x length x age
@@ -200,15 +202,17 @@ Rcpp::List run_full_model_function(
       
       // 5. grow fish ---------------------------------------------------------
       
-      if (MONTH < 11) { // Jan-Nov, fish grow in length, but don't age.
-        next_pop.slice(AGE) = survived * age_transition; // max_cell x n_lengths  
-      } 
-      else if (MONTH == 11) { // in December, fish grow AND age.
-        if (AGE < (max_age - 1)) {
-          next_pop.slice(AGE + 1) = survived * age_transition; // max_cell x n_lengths
-        }
-        // the oldest fish (AGE = max_age) are discarded and not tracked in the model anymore
-      } // note: the age-transition matrix MUST be calculated on a monthly basis.
+      // if (MONTH < 11) { // Jan-Nov, fish grow in length, but don't age.
+      //   next_pop.slice(AGE) = survived * age_transition; // max_cell x n_lengths  
+      // } 
+      // else if (MONTH == 11) { // in December, fish grow AND age.
+      //   if (AGE < (max_age - 1)) {
+      //     next_pop.slice(AGE + 1) = survived * age_transition; // max_cell x n_lengths
+      //   }
+      //   // the oldest fish (AGE = max_age) are discarded and not tracked in the model anymore
+      // } // note: the age-transition matrix MUST be calculated on a monthly basis.
+      
+      next_pop.slice(AGE) = survived * age_transition; // max_cell x n_lengths
       
     } // end of AGE loop for mortality + growth
     
@@ -266,7 +270,21 @@ Rcpp::List run_full_model_function(
   } // end of the MONTH loop
   
   
-  next_pop.slice(0).col(0) = january_recruits; // assign recruits to the youngest age & smallest length of the next year
+  // next_pop.slice(0).col(0) = january_recruits; // assign recruits to the youngest age & smallest length of the next year
+  
+  arma::cube aged_up_pop(max_cell, n_lengths, max_age, arma::fill::zeros);
+  
+  for (int AGE = 0; AGE < max_age - 1; AGE++) {
+    aged_up_pop.slice(AGE + 1) = current_pop.slice(AGE); // shift each age class up by one
+    // the oldest fish (AGE = max_age - 1) are discarded and not tracked in the model anymore,
+    // matching the original comment's intent.
+  }
+  
+  aged_up_pop.slice(0).col(0) = january_recruits; // assign recruits to the youngest age & smallest length
+  
+  next_pop = aged_up_pop; // this is what gets returned and handed off to next year's January
+  
+  
   
   Rcpp::Rcout << "fish successfully recruited, population handed off to next month." << std::endl;
   
