@@ -116,7 +116,7 @@ plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
 # in table 2 we are given the mean efficiency increase of fishers when they use GPS and colour sounders.
 # we will use these to get a pattern of Q over time for commercial fishers
 # we'll also use a base Q (catchability) value - to be calibrated to obtain a sensical fishing mortality
-base_Q <- 3e-09
+base_Q <- 8e-09
 Q_inc = mean(c(133.2, 39.2))/100
 Q_boat_rec <- data.frame(
   year = 1900:2024, 

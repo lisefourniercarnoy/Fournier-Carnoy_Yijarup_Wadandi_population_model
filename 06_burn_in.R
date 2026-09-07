@@ -52,9 +52,10 @@ hyperallo     = (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018
 mature         <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
 settlement     <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse(); settlement <- settlement[, 1] # selecting a single column because the function expects a vector
 age_transition <- readRDS("data/output_data/05_age_transition_matrix.rds") %>% glimpse()
-adult_movement <- readRDS("data/output_data/03_b_adult_movement_10_swim_speed.rds") %>% glimpse()
+adult_movement <- readRDS("data/output_data/03_b_adult_movement_15_swim_speed.rds") %>% glimpse()
 juv_movement   <- readRDS("data/output_data/03_b_juv_movement_10_swim_speed.rds") %>% glimpse()
-spawn_movement <- readRDS("data/output_data/03_b_spawning_movement_10_swim_speed.rds") %>% glimpse()
+l_spawn_movement <- readRDS("data/output_data/03_b_large_spawning_movement_15_swim_speed.rds") %>% glimpse()
+s_spawn_movement <- readRDS("data/output_data/03_b_small_spawning_movement_15_swim_speed.rds") %>% glimpse()
 
 
 fleet_names <- c(
@@ -155,7 +156,8 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
                                          settlement = settlement,
                                          adult_movement_prob = adult_movement,
                                          juv_movement_prob = juv_movement,
-                                         spawn_movement_prob = spawn_movement,
+                                         small_spawn_movement_prob = s_spawn_movement,
+                                         large_spawn_movement_prob = l_spawn_movement,
                                          fleet_names = fleet_names,
                                          fleet_info = fleet_info
   )
@@ -216,6 +218,8 @@ plot(1:max_year, total_pop, type = "l",
      xlab = "Year", ylab = "Total abundance",
      main = "Total Population during burn-in")
 
+saveRDS(BURN_IN_pop[[60]], "data/output_data/06_burn_in_population.rds")
+
 
 ### CHECK: spawning biomass ---------------------------------------------------
 
@@ -235,27 +239,67 @@ saveRDS(SSB0, file = "data/output_data/06_burn_in_SSB0.rds")
 
 ### CHECK: fish density -------------------------------------------------------
 
+library(purrr)
+library(sf)
+library(patchwork)
+
 water <- readRDS("data/output_data/02_watergrid.rds")
-ages_to_plot <- c(1, 2)
-months_to_plot <- 1:12
-year_to_plot <- 60
 
-age_month_df <- lapply(months_to_plot, function(m) {
-  lapply(ages_to_plot, function(a) {
-    cell_totals <- apply(BURN_IN_pop[[year_to_plot]][[m]][,, a], 1, sum)
-    water$fish <- cell_totals
-    water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
-    water$month <- factor(month.abb[m], levels = month.abb)
-    water
-  }) %>% bind_rows()
-}) %>% bind_rows()
+lengths_to_plot <- c(5, 10, 15)
+months_to_plot  <- 1:12
+years_to_plot   <- 54:59
 
-ggplot(age_month_df) +
-  geom_sf(aes(fill = fish), color = NA) +
-  scale_fill_viridis_c(name = "Fish") +
-  facet_grid(age ~ month) +
-  theme_void() +
-  ggtitle(paste0("Fish distribution by age and month (year ", year_to_plot, ")"))
+output_dir <- "plots/gif_frames/06_burn_in_movement"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# --- Step 1: compute per-length global min/max (fixed across all frames) ---
+length_limits <- lapply(lengths_to_plot, function(l) {
+  totals <- unlist(lapply(years_to_plot, function(y) {
+    lapply(months_to_plot, function(m) {
+      apply(BURN_IN_pop[[y]][[m]][, l, ], 1, sum)
+    })
+  }))
+  c(min = min(totals), max = max(totals))
+})
+names(length_limits) <- paste("Length", lengths_to_plot * 50)
+
+# --- Step 2: build one frame as a set of independently-scaled panels ---
+make_frame <- function(y, m) {
+  
+  panels <- lapply(lengths_to_plot, function(l) {
+    cell_totals <- apply(BURN_IN_pop[[y]][[m]][, l, ], 1, sum)
+    water$fish  <- cell_totals
+    label <- paste("Length", l * 50)
+    lims  <- length_limits[[label]]
+    
+    ggplot(water) +
+      geom_sf(aes(fill = fish), color = NA) +
+      scale_fill_gradientn(
+        colors = colour_palette,
+        limits = lims,
+        name = "Fish",
+        guide = guide_colorbar(direction = "horizontal", title.position = "top")
+      ) +
+      theme_void() +
+      theme(
+        legend.position = "none"
+      ) +
+      ggtitle(label)
+  })
+
+  combined <- wrap_plots(panels, nrow = 1) +
+    plot_annotation(title = paste0("Year ", y, " - ", month.abb[m]))
+  
+  fname <- file.path(output_dir,
+                     sprintf("frame_y%02d_m%02d.png", y, m))
+  ggsave(fname, combined,
+         width = 5, height = 6, dpi = 300)
+}
+
+# --- Step 3: loop over every year x month combination ---
+walk(years_to_plot, function(y) {
+  walk(months_to_plot, function(m) make_frame(y, m))
+})
 
 
 ### CHECK: effort distribution ------------------------------------------------
@@ -282,74 +326,6 @@ ggplot(water_effort) +
   facet_wrap(~ fleet, nrow = 1) +
   theme_void() +
   ggtitle(paste0("Fishing effort by fleet (Year ", year_to_plot, ", Month 12)"))
-
-
-### CHECK: movement of juvies to adults ---------------------------------------
-
-water <- readRDS("data/output_data/02_watergrid.rds")
-ages_to_plot <- 1:6
-
-for (MONTH in 1:12) {
-  
-  month_pop <- ModelOutput$master_current_pop[[MONTH]]  # cell x length x age
-  
-  age_df <- lapply(ages_to_plot, function(a) {
-    # sum across lengths, within this age, for every cell
-    cell_totals <- apply(month_pop[, , a], 1, sum)
-    water_a <- water
-    water_a$fish <- cell_totals
-    water_a$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
-    water_a
-  }) %>%
-    bind_rows()
-  
-  p <- ggplot(age_df) +
-    geom_sf(aes(fill = fish), color = NA) +
-    scale_fill_viridis_c(name = "Fish") +
-    facet_wrap(~ age, nrow = 1) +
-    theme_void() +
-    ggtitle(paste0("Fish distribution by age — Month ", MONTH))
-  
-  ggsave(
-    filename = file.path(
-      "plots/script_plot_checks/06/06_movement/",
-      sprintf("age_month_%02d_density.png", MONTH)
-    ),
-    plot = p, width = 12, height = 6, dpi = 120
-  )
-}
-
-lengths_to_plot <- c(4, 5, 6, 19, 20, 21)
-
-for (MONTH in 1:12) {
-  
-  month_pop <- ModelOutput$master_current_pop[[MONTH]]  # cell x length x age
-  
-  length_df <- lapply(lengths_to_plot, function(l) {
-    # sum across lengths, within this length, for every cell
-    cell_totals <- apply(month_pop[, l,], 1, sum)
-    water_l <- water
-    water_l$fish <- cell_totals
-    water_l$length <- factor(paste("Length", l), levels = paste("Length", lengths_to_plot))
-    water_l
-  }) %>%
-    bind_rows()
-  
-  p <- ggplot(length_df) +
-    geom_sf(aes(fill = fish), color = NA) +
-    scale_fill_viridis_c(name = "Fish") +
-    facet_wrap(~ length, nrow = 1) +
-    theme_void() +
-    ggtitle(paste0("Fish distribution by length — Month ", MONTH))
-  
-  ggsave(
-    filename = file.path(
-      "plots/script_plot_checks/06/06_movement/",
-      sprintf("length_month_%02d_density.png", MONTH)
-    ),
-    plot = p, width = 12, height = 6, dpi = 120
-  )
-}
 
 
 ### CHECK: relative catch of fleets -------------------------------------------

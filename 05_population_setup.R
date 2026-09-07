@@ -458,7 +458,7 @@ equil_recr # this says 'however, under fished equilibrium, 1 recruit produces ~9
 ## here we scale the spawning biomasses to the level of recruitment, to make a starting population.
 ## first it's age-based, then we transform it into a age-length-based structure.
 
-init_recr <- 1 # in thousands - 4000 is too small
+init_recr <- 24000 # in thousands - 4000 is too small
 
 # calculate initial fished recruitment (how many new fish from the fished population)
 init_fished_recr <- (fished_female_spawning_biomass-alpha) / (fished_female_spawning_biomass*beta) * init_recr 

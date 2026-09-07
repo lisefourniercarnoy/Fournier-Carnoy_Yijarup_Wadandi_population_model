@@ -246,7 +246,9 @@ network_matrix <- readRDS("data/output_data/03_B_network_matrix.rds")
 # -- calculate the probability a fish moves to this site in a given time step using a swimming speed.
 # -- this creates a dispersal kernel based on the negative exponential distribution.
 
-### 3.1 Non-migrating adult movement probability ------------------------------
+### 3.1 non-spawning adult movement probability -------------------------------
+
+# -- this is for all large fish (>375mm) in Jan-Sep
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
@@ -275,7 +277,7 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 # -- Small movement Swim Speed = 2.5 95% within approx 10km 
 # -- Medium movement Swim Speed = 5 95% within approx 25km
 # -- Big movement Swim Speed = 10 95% within approx 45km 
-swim_speed_adult <- 10
+swim_speed_adult <- 15
 a = -(1 / swim_speed_adult)
 
 # difference in habitat affinity from one cell to all others
@@ -360,9 +362,9 @@ p <- do.call(grid.arrange, c(plot_list, ncol = 3))
 ggsave("plots/script_plot_checks/03_B/03_B_adult_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-### 3.2 Migrating adult movement probability ----------------------------------
+### 3.2 Small migrating adult movement probability ----------------------------
 
-# -- okay so for large adults (say 600mm+) they need to move to embayments to spawn...
+# -- okay so for small adults (375-600mm+) they need to move to seagrass to spawn...
 # -- movement probability depends on three things:
 
 # 1. habitat affinity
@@ -379,8 +381,6 @@ glimpse(spawning)
 sum(is.na(spawning$perc_habitat)) # no NAs, all good.
 
 ggplot() +
-  geom_sf(data = water, aes(fill = spawning$spawning), col = NA)
-ggplot() +
   geom_sf(data = water, aes(fill = spawning$perc_habitat), col = NA)
 
 
@@ -392,7 +392,7 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(spawning)))
 cell_utility[,2] <- as.numeric(spawning$ID) 
 
 for(cell in 1:nrow(spawn_aff)){
-  U <- (exp(spawning[cell, "perc_habitat"]) + 0.5 * exp(spawning[cell, "spawning"]))# * spawning[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
+  U <- (exp(spawning[cell, "perc_habitat"])) # * spawning[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
@@ -410,7 +410,7 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 # -- small movement swim speed = 2.5 95% within approx 10km 
 # -- medium movement swim speed = 5 95% within approx 25km
 # -- big movement swim speed = 10 95% within approx 45km 
-swim_speed_spawner <- 10
+swim_speed_spawner <- 15
 a = -(1 / swim_speed_spawner)
 
 # difference in habitat affinity from one cell to all others
@@ -432,7 +432,7 @@ for (i in 1:NCELL) {
 summary(as.vector(hab_aff_diff))
 summary(as.vector(a * pDist)) 
 
-spawning_hab_attractivity <- 10000*(hab_aff_diff) + (a*pDist) # here we have to make spawning cells overpower the distance between cells
+spawning_hab_attractivity <- 5000*(hab_aff_diff) + (a*pDist) # here we have to make spawning cells overpower the distance between cells
 
 # calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
@@ -459,14 +459,14 @@ p <- ggplot() +
   geom_sf(data = water_test, aes(fill = test), colour = NA) +
   scale_fill_gradient(low = colour_palette[3], high = colour_palette[5]) +
   theme_minimal()
-ggsave("plots/script_plot_checks/03_B/03_B_spawner_habitat_affinity.png", plot = p, width = 6, height = 10, dpi = 500)
+ggsave("plots/script_plot_checks/03_B/03_B_small_spawner_habitat_affinity.png", plot = p, width = 6, height = 10, dpi = 500)
 
 
 # calculate the probability that the fish will move to this site
-spawning_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
-spawning_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
-rowSums(spawning_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
-sum(is.na(spawning_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
+small_spawning_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
+small_spawning_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
+rowSums(small_spawning_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
+sum(is.na(small_spawning_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
 
 
 # CHECK: spawner movement probability from test cells
@@ -475,12 +475,12 @@ plot_list <- list()  # Store all plots here
 
 for (i in 1:num_samples) {
   random_point <- sample(1:NCELL, 1)  # Pick a random cell
-  movement <- spawning_cell_movement_probability[random_point, ]
+  movement <- small_spawning_cell_movement_probability[random_point, ]
   
   # create a dataframe with movement probabilities
   water_2 <- water %>%
     mutate(movement_prob = movement,
-           test_point = (cell_index == random_point))  # use cell_index from earlier
+           test_point = (ID == random_point))
   
   # movement probability map
   movement_plot <- ggplot() +
@@ -497,10 +497,194 @@ for (i in 1:num_samples) {
 
 # plot all in a 2-row, 3-column layout (fits 6 plots, 3 pairs)
 p <- do.call(grid.arrange, c(plot_list, ncol = 3))
-ggsave("plots/script_plot_checks/03_B/03_B_spawner_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
+ggsave("plots/script_plot_checks/03_B/03_B_small_spawner_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-### 3.3 Recruit probability ---------------------------------------------------
+### 3.3 Large migrating adult movement probability ----------------------------
+
+# -- okay so for large adults (say 600mm+) they need to move to embayments to spawn...
+# -- and fish within 50km of Cockburn Sound are attracted to that.
+
+# find cells that are within 50km distance to Cockburn Sound
+cs_cells <- water$ID[water$spawning_status == TRUE] # these are the cockburn sound cells
+cs_id <- as.data.frame(readRDS("data/output_data/03_B_pDist.rds")[, cs_cells]) |> 
+  mutate(ID = row_number()) |> 
+  dplyr::filter(if_all(-ID, ~.<100)) # select only columns within 50km
+
+
+# -- movement probability depends on three things:
+
+# 1. habitat affinity
+sg_list <- water$ID[water$spawning_status == TRUE]
+spawning <- data.frame(
+  perc_habitat = seagrass,
+  ID = water$ID,
+  area_km2 = as.vector(water$cell_area * 1e-6)
+) %>% 
+  mutate(
+    spawning = ifelse(ID %in% sg_list, 1, 0)
+  )
+glimpse(spawning)
+sum(is.na(spawning$perc_habitat)) # no NAs, all good.
+
+ggplot() +
+  geom_sf(data = water, aes(fill = spawning$spawning), col = NA)
+ggplot() +
+  geom_sf(data = water, aes(fill = spawning$perc_habitat), col = NA)
+
+
+# okay now we make a map of affinity for adults during spawning
+spawn_aff <- array(0, dim = c(nrow(spawning), 3))
+spawn_aff[, 3] <- as.numeric(spawning$ID) 
+
+cell_utility <- matrix(0, ncol = 3, nrow=nrow(spawning)) # 2 utility cols, 1 for non-cs cells, 1 for cs cells
+cell_utility[, 3] <- as.numeric(spawning$ID) 
+
+# cs cells
+for(cell in 1:nrow(spawning)){
+  
+  if (cell %in% cs_id$ID) {
+    U <- (exp(spawning[cell, "perc_habitat"]) + 0.5 * exp(spawning[cell, "spawning"]))# * spawning[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell.
+    cell_utility[cell, 1] <- as.numeric(U) # CS utility
+    
+    } else {
+      U <- (exp(spawning[cell, "perc_habitat"])) #+ 0.5 * exp(spawning[cell, "spawning"]))# * spawning[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell.
+      cell_utility[cell, 2] <- as.numeric(U) # non-CS utility
+  }
+  
+} # this loop makes CS cells attractive to cells near CS, and for all other cells, seagrass attractive.
+
+rowU <- c(
+  sum(cell_utility[,1]), # cs-cells
+  sum(cell_utility[,2]) # non-cs-cells
+  )
+
+for (cell in 1:nrow(spawn_aff)){
+  
+  if (cell %in% cs_id$ID) {
+    spawn_aff[cell, 1] <- cell_utility[cell, 1] / rowU[1]
+    
+  } else {
+    spawn_aff[cell, 2] <- cell_utility[cell, 2] / rowU[2]
+  }
+  
+} # this loop calculates attractivity for each cell (proportion of that cell's attractivity to the total attractivity of the area)
+
+
+# 2. distance from other cells
+pDist <- readRDS("data/output_data/03_B_pDist.rds")
+
+
+# 3. swimming speed 
+# -- small movement swim speed = 2.5 95% within approx 10km 
+# -- medium movement swim speed = 5 95% within approx 25km
+# -- big movement swim speed = 10 95% within approx 45km 
+swim_speed_spawner <- 15
+a = -(1 / swim_speed_spawner)
+
+# difference in habitat affinity from one cell to all others
+hab_aff_diff <- matrix(0,nrow = NCELL, ncol = NCELL)
+for (i in 1:NCELL) {
+  for (j in 1:NCELL) {
+    
+    if (i %in% cs_id$ID) { 
+      
+      from_aff <- spawn_aff[i, 1]
+      to_aff <- spawn_aff[j, 1]
+      
+      hab_aff_diff[i,j] <- to_aff - from_aff
+      
+    } else { 
+      
+      from_aff <- spawn_aff[i, 2]
+      to_aff <- spawn_aff[j, 2]
+      
+      hab_aff_diff[i,j] <- to_aff - from_aff
+      
+      }
+    
+  }
+} # -- this loop calculates the difference in habitat affinity between cells.
+
+# -- from this we can determine the utility of each of the cells.
+# -- this is very sensitive to changes in the habitat values.
+
+# -- here we need to make habitat affinity much more attractive. when checking the ranges of the two elements we're using to make the movement prob, hab_aff definitely needs to be bumped up.
+summary(as.vector(hab_aff_diff))
+summary(as.vector(a * pDist)) 
+
+spawning_hab_attractivity <- 5000 * (hab_aff_diff) + (a*pDist) # here we have to make spawning cells overpower the distance between cells
+
+# calculate the summed utility across the rows 
+rowU <- matrix(NA, ncol = 1, nrow = NCELL)
+cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
+
+water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km², add a constant
+
+# difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
+# logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
+cell_area_km2 <- log(water$cell_area) 
+cell_utility <- exp(spawning_hab_attractivity) * matrix(cell_area_km2, 
+                                                        nrow = NCELL, 
+                                                        ncol = NCELL, 
+                                                        byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+glimpse(cell_utility)
+
+rowU <- as.data.frame(rowSums(cell_utility))
+summary(rowU)
+
+# CHECK: spawner habitat affinity overall
+water_test <- water
+water_test$test <- spawn_aff[,1]
+p <- ggplot() +
+  geom_sf(data = water_test, aes(fill = test), colour = NA) +
+  scale_fill_gradient(low = colour_palette[3], high = colour_palette[5]) +
+  theme_minimal()
+ggsave("plots/script_plot_checks/03_B/03_B_large_spawner_habitat_affinity.png", plot = p, width = 6, height = 10, dpi = 500)
+
+
+# calculate the probability that the fish will move to this site
+large_spawning_cell_movement_probability <- matrix(NA, ncol = NCELL, nrow = NCELL)
+large_spawning_cell_movement_probability <- cell_utility / rowU[, 1] # this calculates the probability of moving to a certain cell based on all other possible moves.
+rowSums(large_spawning_cell_movement_probability) # should be full of 1, because cell 1's probability of moving to any other cell (all the row) is 1.
+sum(is.na(large_spawning_cell_movement_probability)) # There should be no NAs, otherwise the model can't calculate things correctly.
+
+
+# CHECK: spawner movement probability from test cells
+num_samples <- 3  # Number of cells to visualize
+plot_list <- list()  # Store all plots here
+
+cells_to_test <- c(154, 1540, 1075)
+
+for (i in 1:num_samples) {
+  random_point <- cells_to_test[i]  # Pick a random cell
+  movement <- large_spawning_cell_movement_probability[random_point, ]
+  
+  # create a dataframe with movement probabilities
+  water_2 <- water %>%
+    mutate(movement_prob = movement,
+           test_point = (ID == random_point))  # use cell_index from earlier
+  
+  # movement probability map
+  movement_plot <- ggplot() +
+    geom_sf(data = water_2, aes(fill = movement_prob), color = NA, lwd = 0) +
+    geom_sf(data = water_2 %>% filter(test_point), fill = "red", color = NA, lwd = 0) +
+    scale_fill_gradient(low = colour_palette[3], high = colour_palette[5]) +
+    ggtitle(paste("Movement Prob. - Cell", random_point)) +
+    theme_minimal()
+  
+  # store both plot in list
+  plot_list[[i]] <- movement_plot
+  
+} # this loop creates, for a random cell, a map of which cells are most likely to be travelled to, and a plot of how cumulative probability of travel by distance
+
+# plot all in a 2-row, 3-column layout (fits 6 plots, 3 pairs)
+p <- do.call(grid.arrange, c(plot_list, ncol = 3))
+ggsave("plots/script_plot_checks/03_B/03_B_large_spawner_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
+
+
+
+### 3.4 Recruit probability ---------------------------------------------------
 
 # -- we want the recruits to be in seagrass and spawning ground, and then move out from there 
 
@@ -568,7 +752,7 @@ cs_spawn / non_cs_spawn
 # putting this on the shelf for nowwwwwww...... that'll bite me in the arse later but it's a calculated decision..?
 
 
-### 3.4 Juvenile movement -----------------------------------------------------
+### 3.5 Juvenile movement -----------------------------------------------------
 
 water <- water %>% mutate(cell_index = seq_len(nrow(water))) # this gives each row an ID that matches with the matrices' ID. Otherwise the movements make no sense
 
@@ -597,7 +781,7 @@ pDist <- readRDS("data/output_data/03_B_pDist.rds")
 # -- small movement Swim Speed = 2.5 95% within approx 10km 
 # -- medium movement Swim Speed = 5 95% within approx 25km
 # -- big movement Swim Speed = 10 95% within approx 45km 
-swim_speed_juv <- 5
+swim_speed_juv <- 10
 a = -(1/swim_speed_juv)
 
 
@@ -683,10 +867,11 @@ p <- do.call(grid.arrange, c(plot_list, ncol = 3))
 ggsave("plots/script_plot_checks/03_B/03_B_juvenile_movement_probability_test_cell.png", plot = p, width = 10, height = 7, dpi = 500)
 
 
-### 3.5 Save files for next step ----------------------------------------------
+### 3.6 Save files for next step ----------------------------------------------
 
 saveRDS(adult_cell_movement_probability, paste0("data/output_data/03_B_adult_movement_", swim_speed_adult, "_swim_speed.rds"))
-saveRDS(spawning_cell_movement_probability, paste0("data/output_data/03_B_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(small_spawning_cell_movement_probability, paste0("data/output_data/03_B_small_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(large_spawning_cell_movement_probability, paste0("data/output_data/03_B_large_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
 saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
 saveRDS(recruitment, "data/output_data/03_B_recruitment.rds")
 

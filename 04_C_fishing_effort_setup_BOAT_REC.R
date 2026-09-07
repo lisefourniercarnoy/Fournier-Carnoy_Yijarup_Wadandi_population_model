@@ -403,7 +403,6 @@ dim(network_matrix) # number of ramps x number of cells
 glimpse(network_matrix)
 access_dist <- as.data.frame(t(network_matrix))
 colnames(access_dist) <- BR$name
-access_dist <- access_dist[,order(colnames(access_dist))] # reorder columns alphabetically to avoid mis-assigning effort later.
 access_dist$ID <- water$ID
 access_dist <- access_dist / 1000
 head(access_dist) # this gives us each cell's distance to the access points
