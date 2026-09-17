@@ -392,7 +392,7 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(spawning)))
 cell_utility[,2] <- as.numeric(spawning$ID) 
 
 for(cell in 1:nrow(spawn_aff)){
-  U <- (exp(spawning[cell, "perc_habitat"])) # * spawning[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
+  U <- (exp(spawning[cell, "perc_habitat"])) # each cell is exponentially more attractive the more seagrass it has.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
@@ -432,7 +432,7 @@ for (i in 1:NCELL) {
 summary(as.vector(hab_aff_diff))
 summary(as.vector(a * pDist)) 
 
-spawning_hab_attractivity <- 5000*(hab_aff_diff) + (a*pDist) # here we have to make spawning cells overpower the distance between cells
+spawning_hab_attractivity <- 5000*(hab_aff_diff) + (a*pDist) + log(as.numeric(water$cell_area)* 1e-6) # here we have to make spawning cells overpower the distance between cells
 
 # calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
@@ -442,11 +442,12 @@ water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km²,
 
 # difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
 # logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
-cell_area_km2 <- log(water$cell_area) 
-cell_utility <- exp(spawning_hab_attractivity) * matrix(cell_area_km2, 
-                                                     nrow = NCELL, 
-                                                     ncol = NCELL, 
-                                                     byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+#cell_area_km2 <- log(water$cell_area) 
+cell_utility <- exp(spawning_hab_attractivity) 
+# * matrix(cell_area_km2, 
+#                                                         nrow = NCELL, 
+#                                                         ncol = NCELL, 
+#                                                         byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 
 rowU <- as.data.frame(rowSums(cell_utility))
@@ -613,7 +614,7 @@ for (i in 1:NCELL) {
 summary(as.vector(hab_aff_diff))
 summary(as.vector(a * pDist)) 
 
-spawning_hab_attractivity <- 5000 * (hab_aff_diff) + (a*pDist) # here we have to make spawning cells overpower the distance between cells
+spawning_hab_attractivity <- 5000 * (hab_aff_diff) + (a*pDist) + log(as.numeric(water$cell_area)* 1e-6) # here we have to make spawning cells overpower the distance between cells
 
 # calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
@@ -624,10 +625,11 @@ water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km²,
 # difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
 # logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
 cell_area_km2 <- log(water$cell_area) 
-cell_utility <- exp(spawning_hab_attractivity) * matrix(cell_area_km2, 
-                                                        nrow = NCELL, 
-                                                        ncol = NCELL, 
-                                                        byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+cell_utility <- exp(spawning_hab_attractivity)
+# * matrix(cell_area_km2, 
+#                                                         nrow = NCELL, 
+#                                                         ncol = NCELL, 
+#                                                         byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 
 rowU <- as.data.frame(rowSums(cell_utility))
@@ -715,7 +717,7 @@ cell_utility <- matrix(0, ncol = 2, nrow=(nrow(dispersal)))
 cell_utility[,2] <- as.numeric(dispersal$ID) 
 
 for(cell in 1:nrow(recruitment)){
-  U <- (exp(dispersal[cell, "perc_habitat"]) + 0.5 * exp(dispersal[cell, "spawning"]))# * dispersal[cell, "area_km2"] # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
+  U <- (exp(dispersal[cell, "perc_habitat"]) + 0.5 * exp(dispersal[cell, "spawning"])) * log(dispersal[cell, "area_km2"]) # each cell is exponentially more attractive the more seagrass it has, AND if it's a spawning ground cell. also weighted by cell size.
   cell_utility[cell, 1] <- as.numeric(U)
 } # this loop makes spawning ground cells and seagrass cells exponentially more attractive.
 
@@ -799,21 +801,20 @@ for (i in 1:NCELL) {
 
 # from this we can determine the utility of each of the cells.
 # -- this is very sensitive to changes in the habitat values.
-juv_hab_attractivity <- hab_aff_diff + (a*pDist) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
+juv_hab_attractivity <- hab_aff_diff + (a*pDist) + log(as.numeric(water$cell_area)* 1e-6) # here we need to make cells with suitable habitat MORE attractive, to square it. i think if you dont, the habitat makes very little difference as to where the population is.
 
 # calculate the summed utility across the rows 
 rowU <- matrix(NA, ncol = 1, nrow = NCELL)
 cell_utility <- matrix(NA, ncol = NCELL, nrow = NCELL)
 
-water$cell_area <- as.numeric(water$cell_area) * 1e-6 + 1 # convert m² to km², add a constant
-
 # -- difference in attractivity between a cell of 1km2 and 2km2 (+1) is huge (doubling) but a +1 in area from 18km2 to 19km2 is much less (proportionately)
 # -- logging accounts for this different relationship. otherwise large cells are wayyyy too attractive.
 cell_area_km2 <- log(water$cell_area) 
-cell_utility <- exp(juv_hab_attractivity) * matrix(cell_area_km2, 
-                                                   nrow = NCELL, 
-                                                   ncol = NCELL, 
-                                                   byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
+cell_utility <- exp(juv_hab_attractivity)
+# * matrix(cell_area_km2, 
+#                                                    nrow = NCELL, 
+#                                                    ncol = NCELL, 
+#                                                    byrow = TRUE) # this calculates the likelihood of moving from cell x to any other cell based on its attractivity and distance to it.
 glimpse(cell_utility)
 
 rowU <- as.data.frame(rowSums(cell_utility))
