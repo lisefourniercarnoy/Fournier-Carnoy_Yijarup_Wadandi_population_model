@@ -4,7 +4,7 @@
 # Data:    ?
 # Task:    Create many scenarios from a single script
 # Author:  Lise Fournier-Carnoy / adapted from Charlotte Aston
-# Date:    December 2025
+# Date:    September 2026
 
 # -----------------------------------------------------------------------------
 
@@ -37,8 +37,8 @@ library(patchwork) # for plot arrangements
 # -- make a dedicated folder for the shapefiles (exact name format: "data/input_data/(scenario name)_restrictions)
 # -- you should save the corresponding fleet restrictions (exact format "Q_management_scenario_(fleet)_(scenario_name)"). the script is set up to find these objects seamlessly.
 
-scenario_name <- "business_as_usual"
-scenario_code <- "S00"
+scenario_name <- "wadandi_management"
+scenario_code <- "S01"
 
 n_restrictions_com <- st_read(paste0("data/input_data/", scenario_code, "_", scenario_name, "_restrictions/Q_management_scenario_com_", scenario_code, ".shp"))
 n_restrictions_br  <- st_read(paste0("data/input_data/", scenario_code, "_", scenario_name, "_restrictions/Q_management_scenario_br_", scenario_code, ".shp"))
