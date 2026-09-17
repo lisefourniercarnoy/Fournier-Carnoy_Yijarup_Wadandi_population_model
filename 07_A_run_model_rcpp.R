@@ -64,7 +64,7 @@ max_age     <- 40 # The max age of the fish in the model, see script 05 for corr
 n_lengths   <- length(readRDS("data/output_data/05_length_bins.rds"))
 max_year    <- n_yrs_modelled # Number of years the model should run for 
 
-current_pop   <- readRDS("data/output_data/06_burn_in_population.rds") %>% glimpse()
+current_pop   <- readRDS("data/output_data/06_burn_in_population.rds")$Dec %>% glimpse()
 weight        <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
 selectivity   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME FOR ALL FLEETS BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
 nat_mort      = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
@@ -194,6 +194,9 @@ total_pop <- sapply(RECONS_pop, function(year_list) {
 plot(1:max_year, total_pop, type = "l",
      xlab = "Year", ylab = "Total abundance",
      main = "Total Population during reconstruction")
+
+pop <- RECONS_pop[124][[1]]$Dec
+saveRDS(pop, "data/output_data/07_end_reconstruction_pop.rds")
 
 
 ### CHECK: age and length structure in the last time step ---------------------
