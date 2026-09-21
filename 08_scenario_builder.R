@@ -37,8 +37,8 @@ library(patchwork) # for plot arrangements
 # -- make a dedicated folder for the shapefiles (exact name format: "data/input_data/(scenario name)_restrictions)
 # -- you should save the corresponding fleet restrictions (exact format "Q_management_scenario_(fleet)_(scenario_name)"). the script is set up to find these objects seamlessly.
 
-scenario_name <- "wadandi_management"
-scenario_code <- "S01"
+scenario_name <- "business_as_usual"
+scenario_code <- "S00"
 
 n_restrictions_com <- st_read(paste0("data/input_data/", scenario_code, "_", scenario_name, "_restrictions/Q_management_scenario_com_", scenario_code, ".shp"))
 n_restrictions_br  <- st_read(paste0("data/input_data/", scenario_code, "_", scenario_name, "_restrictions/Q_management_scenario_br_", scenario_code, ".shp"))
@@ -507,9 +507,15 @@ attractivity <- lapply(1:12, function(m) {
 # -- catchability works with fishing effort to produce fishing mortality. 
 # -- it is unknowable, so we will need to calibrate it. 
 # -- see script 04_D for process 
-
 q <- readRDS("data/output_data/04_D_commercial_q.rds")$Q
-q[length(q)]
+
+# -- NEW FOR THIS SCRIPT: need to use the latest q (2024) and increase it over time (2% per year?)
+q_forecasted <- data.frame(years = 1:n_years_tot,
+                           q = q[length(q)])
+
+for(y in 2:n_years_tot) { q_forecasted[y, 'q'] <- 1.02 * q_forecasted[y-1, 'q'] } # increase 2% per year
+q <- q_forecasted$q
+
 
 fishable_depth_expanded <- array(NA, dim = c(NCELL, 12, n_years_tot)); for (m in 1:12) {fishable_depth_expanded[, m, ] <- fishable_depth_cell_year}
 fishable_area <- water_area * fishable_depth_expanded # cell x month x year
@@ -518,7 +524,7 @@ fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/"
 catchability <- array(0, dim = dim(fishable_area))
 for (y in 1:dim(fishable_area)[3]) {
   for (m in 1:12) {
-    catchability[, m, y] <- q[length(q)] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
+    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
   }
 }
 catchability[catchability == Inf] <- 0  # if cells are not fishable, division by zero (in loop above). change to zero to avoid messing everything up later on.
@@ -1233,6 +1239,13 @@ attractivity <- lapply(1:12, function(m) {
 
 q <- readRDS("data/output_data/04_D_shore_rec_q.rds")$Q
 
+# -- NEW FOR THIS SCRIPT: need to use the latest q (2024) and increase it over time (2% per year?)
+q_forecasted <- data.frame(years = 1:n_years_tot,
+                           q = q[length(q)])
+
+for(y in 2:n_years_tot) { q_forecasted[y, 'q'] <- 1.02 * q_forecasted[y-1, 'q'] } # increase 2% per year
+q <- q_forecasted$q
+
 shore_mask <- water$type %in% c("shore_wadandi", "shore_north")  # TRUE for shore cells only
 fishable_area <- water_area
 fishable_area[!shore_mask, , ] <- 0   # zero out offshore cells so they don't count toward the total
@@ -1896,6 +1909,13 @@ attractivity <- lapply(1:12, function(m) {
 # -- see script 04_D for process 
 
 q <- readRDS("data/output_data/04_D_boat_rec_q.rds")$Q
+
+# -- NEW FOR THIS SCRIPT: need to use the latest q (2024) and increase it over time (2% per year?)
+q_forecasted <- data.frame(years = 1:n_years_tot,
+                           q = q[length(q)])
+
+for(y in 2:n_years_tot) { q_forecasted[y, 'q'] <- 1.02 * q_forecasted[y-1, 'q'] } # increase 2% per year
+q <- q_forecasted$q
 
 fishable_depth_expanded <- array(NA, dim = c(NCELL, 12, n_years_tot)); for (m in 1:12) {fishable_depth_expanded[, m, ] <- fishable_depth_cell_year}
 fishable_area <- water_area * fishable_depth_expanded # cell x month x year
