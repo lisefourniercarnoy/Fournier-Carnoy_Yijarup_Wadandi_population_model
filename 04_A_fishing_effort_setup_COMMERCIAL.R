@@ -575,7 +575,7 @@ prop_month_ave <- boat_month_prop[1:12, c(2, 5)]
 
 saveRDS(prop_month_ave, "data/output_data/04_A_commercial_metro_prop_month_ave.rds") # charlotte's 'Average_Monthly_Effort"
 
-#### 4.1.2 Distribute monthly effort into boat ramps --------------------------
+#### 4.1.3 Distribute monthly effort into boat ramps --------------------------
 
 BR_n <- st_read(file_boat_ramps_n) %>% 
   st_transform(4283) %>%

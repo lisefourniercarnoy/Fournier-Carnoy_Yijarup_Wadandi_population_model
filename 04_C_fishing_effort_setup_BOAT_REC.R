@@ -453,15 +453,22 @@ plot(fuel_price_clean$price_per_km ~ fuel_price_clean$year, type = "l") # plot c
 # -- okay so now that we have most of our elements, we can make a function that defines the 'attractivity' of each cell
 # -- the format should be: cell x access point x year
 
+# -- the values for the RUM are model-averaged from two RUMS in the region:
+# -- Navarro et al. 2021 - https://academic.oup.com/icesjms/article/79/1/147/6470668?login=false
+# -- and Navarro et al. 2025 - table 31, standard TC-RUM, https://wamsi.org.au/app/uploads/2025/10/WWMSP_6.2.1_Opportunities-and-impacts-for-recreational-fishing-from-Westport-development-Final.pdf#page=63.17
+# -- the expected catch is also modified in section 5
+tc_param <- mean(-0.204, -0.015) # travel cost
+la_param <- mean(1.134, 0.18) # log cell area
+
 attractivity <- array(dim = c(NCELL, nrow(BR), 12, n_years_tot))
 
 for(YEAR in 1:n_years_tot) {
   for(MONTH in 1:12) {
     for (ACCESS in 1:nrow(BR)) {
       attractivity[, ACCESS, MONTH,  YEAR] <- 
-        -0.204 * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
-        -0.848 * log(shore_dist$shore_dist + 1) + # offshore dist
-        1.134 * log(cell_area + 1) # cell area
+        tc_param * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
+        #-0.848 * log(shore_dist$shore_dist + 1) + # offshore dist - not used in the 2025 paper. skipping to test
+        la_param * log(cell_area + 1) # cell area
       
       # and then we add the depth fishability, to turn off cells that are too deep
       attractivity[, ACCESS, MONTH, YEAR][fishable_depth_cell_year[,YEAR] == 0] <- NA # effort gets allocated to cells with high attractivity. here all cells have a negative attractivity, so we set unfishable cells to be even more negative than that
@@ -729,9 +736,9 @@ dimnames(access_point_effort)[[2]] <- c(1:length(dimnames(access_point_effort)[[
 ## 5. Create a list to use in the C++ function --------------------------------
 
 # little details to include in the final list
-coef_values <- tibble(expected_catch = 1.5,
-                      expected_catch_sq = -1.171
-) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing
+coef_values <- tibble(expected_catch = mean(1.5, 1.43), # see section 2.4 for explanation
+                      expected_catch_sq = -1.171 # no square term in the 2025 paper, see section 2.4 for explanation
+) # coefficients from Matt's 2022 and 2025 papers. they weigh the relative importance of each for the distribution of effort. the paper was for boat rec fishing
 
 fishing_info_list <- list(catchability, 
                           attractivity, 
