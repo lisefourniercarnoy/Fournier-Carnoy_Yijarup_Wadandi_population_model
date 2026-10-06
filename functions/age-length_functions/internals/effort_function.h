@@ -26,7 +26,8 @@ Rcpp::List distribute_effort_function(
   Rcpp::List fishing_effort_all_fleets(n_fleets); // vector of size n_cells for every fleet, list of size n_fleets
   
   Rcpp::List final_expected_catch(n_fleets); // fleet list of ncell vectors
-      
+  Rcpp::List welfare_all_fleets(n_fleets);
+  
   for (int i = 0; i < n_fleets; i++) { // for each fleet...
 
     Rcpp::List current_fleet = fleet_info[i]; // extract information for the current fleet
@@ -43,9 +44,10 @@ Rcpp::List distribute_effort_function(
     
     // calculate the coefficients for every access_point
     const int n_access_points = cell_attractivity_now.n_cols;
-    Rcpp::DataFrame coef_values   = Rcpp::as<Rcpp::DataFrame>(current_fleet["coef_values"]); // coefficients from matt's paper
+    Rcpp::DataFrame coef_values = Rcpp::as<Rcpp::DataFrame>(current_fleet["coef_values"]); // coefficients from matt's paper
     
     arma::mat utility_calc(max_cell, n_access_points); // announce new matrix (cell x access_point)
+    arma::vec welfare_this_fleet(n_access_points, arma::fill::zeros); // welfare vector
     
     for (int access_point = 0; access_point < n_access_points; access_point++) {
       
@@ -73,7 +75,23 @@ Rcpp::List distribute_effort_function(
         ? cell_utility_here_now / utility_sum
       : arma::vec(max_cell, arma::fill::zeros); // no fishable cells this month -> no effort allocated, not uniform effort
       
-      }
+      
+      // 2.D. calculate welfare
+      
+      // for boat recreational fishers, we want to know the $ lost on different scenarios.
+      // equation 5.9 in Small, K. A., & Rosen, H. S. (1981). Applied welfare economics with discrete choice models. Econometrica: Journal of the Econometric Society, 105-130.
+      
+      if (fleet_names[i] == "boat_rec") {
+        
+        double c = -(1/std::abs(-0.204));
+        double log_sum_exp = log(utility_sum) + max_coef; // adding max coef again to undo what step 2.C did.
+        
+        welfare_this_fleet(access_point) = c * log_sum_exp;
+      }      
+    } // end of access point loop
+    
+    welfare_all_fleets[i] = welfare_this_fleet;
+    
     
     // 3. distribute effort
     arma::cube fishing_days         = Rcpp::as<arma::cube>(current_fleet["fishing_days"]); // (month x access_point x years)
@@ -85,12 +103,16 @@ Rcpp::List distribute_effort_function(
     fishing_effort_all_fleets[i]    = fishing_effort_sum; // record the fishing effort vector for this fleet
     
     effort_matrix.col(i)            = fishing_effort_sum; // stack all fleet efforts together
-  } 
+ 
+  
+  } // end of fleet loop
   
   arma::vec total_fishing_effort = arma::sum(effort_matrix, 1); // sum across columns (fleets) to get a vector of size n_cells
   
+  
   return Rcpp::List::create(
     Rcpp::Named("fleet_fishing_effort") = fishing_effort_all_fleets, // list of vectors of size n_cells for every fleet
-    Rcpp::Named("total_fishing_effort") = total_fishing_effort // vector of size n_cells for all fleet
+    Rcpp::Named("total_fishing_effort") = total_fishing_effort, // vector of size n_cells for all fleet
+    Rcpp::Named("welfare_by_fleet") = welfare_all_fleets
   );
 } 
