@@ -45,14 +45,14 @@ F_ss <- data.frame(
   x = full_years,
   y = approx(x = F_ss$x, y = F_ss$y, xout = full_years)$y
 )
-plot(F_ss, type = "l", lwd = 2, col = "steelblue")
+# plot(F_ss, type = "l", lwd = 2, col = "steelblue")
 
 
 ## 2. COMMERCIAL fishing mortality --------------------------------------------
 
 # obtain 1 fishing effort value per year
 c_effort <- apply(dat_com$fishing_days, 3, sum)  # vector, length 125
-plot(c_effort[75:125], type = "l")
+# plot(c_effort[75:125], type = "l")
 
 # catchability likely changed over time as better gear and better tech allowed fishers to fish more efficiently
 # see Marriott et al. 2010 for details https://academic.oup.com/icesjms/article/68/1/76/631662?login=false 
@@ -69,27 +69,27 @@ logistic_fn <- function(y) {
 }
 y <- 1:125
 Py <- logistic_fn(y)
-plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
+# plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
 
 
 # in table 2 we are given the mean efficiency increase of fishers when they use GPS and colour sounders.
 # we will use these to get a pattern of Q over time for commercial fishers. i've increased them a bit to  make the catchability curve fit.
 # we'll also use a base Q (catchability) value - to be calibrated to obtain a sensical fishing mortality
-base_Q <- 5e-06
+com_base_Q <- 5e-06
 Q_inc = (mean(c(133.2, 39.2))/100) + 5
 Q_commercial <- data.frame(
   year = 1900:2024, 
-  Q = base_Q * (1 + (Py / alpha) * Q_inc)
+  Q = com_base_Q * (1 + (Py / alpha) * Q_inc)
 )
 
-plot(Q_commercial$year, Q_commercial$Q, type = "l") # catchability here increases logistically from the 80s. 
+# plot(Q_commercial$year, Q_commercial$Q, type = "l") # catchability here increases logistically from the 80s. 
 
 F_commercial <- data.frame(
   year = 1900:2024, 
   F = Q_commercial$Q * c_effort
 )
 
-plot(F_commercial$year[75:125], F_commercial$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
+# plot(F_commercial$year[75:125], F_commercial$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
 
 
 ## 3. BOAT REC fishing mortality ----------------------------------------------
@@ -111,35 +111,35 @@ logistic_fn <- function(y) {
 }
 y <- 1:125
 Py <- logistic_fn(y)
-plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
+# plot(1900:2024, Py, type = "l", ylab = "Proportion adopted", ylim = c(0, 1))
 
 # in table 2 we are given the mean efficiency increase of fishers when they use GPS and colour sounders.
 # we will use these to get a pattern of Q over time for commercial fishers
 # we'll also use a base Q (catchability) value - to be calibrated to obtain a sensical fishing mortality
-base_Q <- 8e-09
+brec_base_Q <- 8e-09
 Q_inc = mean(c(133.2, 39.2))/100
 Q_boat_rec <- data.frame(
   year = 1900:2024, 
-  Q = base_Q * (1 + Py * Q_inc)
+  Q = brec_base_Q * (1 + Py * Q_inc)
 )
 
-plot(x = Q_boat_rec$year, Q_boat_rec$Q, type = "l") # catchability here increases logistically from the 80s. 
+# plot(x = Q_boat_rec$year, Q_boat_rec$Q, type = "l") # catchability here increases logistically from the 80s. 
 
 F_boat_rec <- data.frame(
   year = 1900:2024, 
   F = Q_boat_rec$Q * b_effort
 )
 
-plot(F_boat_rec$year[75:125], F_boat_rec$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
+# plot(F_boat_rec$year[75:125], F_boat_rec$F[75:125], type = "l") # this should somewhat match the commercial catch. see Fisher et al. 2025, figure 3.8d
 
 
 ## 4. SHORE REC effort --------------------------------------------------------
 
 s_effort <- apply(dat_srec$fishing_days, 3, sum)  # vector, length 125
 
-start_Q <- 7e-08
+srec_base_Q <- 7e-08
 Q_shore_rec <- data.frame(year = 1900:2024, 
-                          Q = start_Q) %>%
+                          Q = srec_base_Q) %>%
   glimpse()
 
 for (Y in 1950:2024) {
@@ -151,22 +151,23 @@ F_shore_rec <- data.frame(
   year = 1900:2024, 
   F = Q_shore_rec$Q * s_effort
 )
-plot(F_shore_rec[75:125,], type = "l", col = "steelblue", lwd = 2)
+# plot(F_shore_rec[75:125,], type = "l", col = "steelblue", lwd = 2)
 
 
 ## 5. See overall -------------------------------------------------------------
 
-ggplot() + # this should somewhat match Fisher et al. 2025, figure 3.8d, shore rec excluded
-  geom_line(data = F_commercial[75:125,], aes(x = year, y = F), linewidth = 1.5, linetype = "dashed") +
-  geom_line(data = F_boat_rec[75:125,], aes(x = year, y = F), linewidth = 1.5, linetype = "dotted") +
-  geom_line(data = F_shore_rec[75:125,], aes(x = year, y = F), linewidth = 1.5, linetype = "solid") +
-  
-  theme_minimal()
-
 # below, the red line should align on the blue as best as possible.
-F_all <- (F_shore_rec$F[75:125] + F_boat_rec$F[75:125] + F_commercial$F[75:125])
-plot(x = F_ss$x, F_ss$y, lwd = 2, col = "steelblue", type = "l")
-lines(x = 1975:2025, y = F_all, col = "firebrick", lwd = 2)
+F_all <- (F_boat_rec$F[F_boat_rec$year %in% c(1975:2024)] +  
+           F_commercial$F[F_commercial$year %in% c(1975:2024)] +
+           F_shore_rec$F[F_shore_rec$year %in% c(1975:2024)]
+            )
+
+plot(x = F_ss$x, F_ss$y, lwd = 2, col = "steelblue", type = "l",
+     main = paste0("com_base_q = ", com_base_Q, 
+                   "\n brec_base_q = ", brec_base_Q, 
+                   "\n srec_base_q = ", srec_base_Q))
+
+lines(x = 1975:2024, y = F_all, col = "firebrick", lwd = 2)
 
 
 ## 6. Save outputs to use in 04_A-C -------------------------------------------
@@ -174,5 +175,10 @@ lines(x = 1975:2025, y = F_all, col = "firebrick", lwd = 2)
 saveRDS(Q_commercial, "data/output_data/04_D_commercial_q.rds")
 saveRDS(Q_boat_rec, "data/output_data/04_D_boat_rec_q.rds")
 saveRDS(Q_shore_rec, "data/output_data/04_D_shore_rec_q.rds")
+
+saveRDS(F_commercial, "data/output_data/04_D_commercial_F.rds")
+saveRDS(F_boat_rec, "data/output_data/04_D_boat_rec_F.rds")
+saveRDS(F_shore_rec, "data/output_data/04_D_shore_rec_F.rds")
+
 
 ### END ###
