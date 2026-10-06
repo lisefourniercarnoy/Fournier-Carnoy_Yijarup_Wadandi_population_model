@@ -57,8 +57,9 @@ Rcpp::List run_full_model_function(
   
   // 3 how much catch is there every year
   arma::vec master_yearly_catch(n_fleets, arma::fill::zeros); // vec of length n_fleet
-  arma::cube master_catch_by_length(max_cell, n_lengths, n_fleets, arma::fill::zeros); // cell x lengths x fleet, this is an important output to understand whether shore fishers are catching less fish over time
-    
+  arma::cube master_catch_by_length(max_cell, n_lengths, n_fleets, arma::fill::zeros); // cell x lengths x fleet, yearly sum of catches by fleet. 
+  arma::mat master_catch_by_length_june(max_cell, n_lengths, arma::fill::zeros); // cell x lengths, June shore-rec catch size stucture. Wadandi metric of success.
+  
   // 4 spawning biomass every year
   arma::vec january_recruits(max_cell, arma::fill::zeros); // function object, sum of recruits of all spawning months. gets renewed every year.
   double master_SSB = 0.0; // single value (should be the mean SSB across spawning months)
@@ -66,7 +67,16 @@ Rcpp::List run_full_model_function(
   // 5 fishing mortality
   arma::mat master_F(12, n_fleets, arma::fill::zeros); 
   
-  
+  // 6 boat rec fishers' welfare
+  int boat_rec_idx = -1; // find the boat rec index
+  for (int FLEET = 0; FLEET < n_fleets; FLEET++) {
+    if (fleet_names[FLEET] == "boat_rec") {
+      boat_rec_idx = FLEET;
+      break;
+    }
+  }  
+  double welfare = 0.0; // should accumulate every month, to obtain a single value per year
+
   // 0b. extract objects that need to be calculated only once per year --------
   
   arma::vec sel_this_year = selectivity.col(YEAR);
@@ -139,6 +149,13 @@ Rcpp::List run_full_model_function(
       master_effort_by_fleet.slice(FLEET).col(MONTH) = effort_now; // format (cell, month, fleet) 
     } // record how much fishing there will be this month and where.
     
+    // extract welfare
+    Rcpp::List welfare_this_month = Rcpp::as<Rcpp::List>(effort_distribution_output["welfare_by_fleet"]); // extract welfare from the effort outputs
+    arma::vec welfare_boat_rec_vec = Rcpp::as<arma::vec>(welfare_this_month[boat_rec_idx]); // one value per access_point
+    double welfare_boat_rec_sum = arma::accu(welfare_boat_rec_vec);
+    welfare = welfare + welfare_boat_rec_sum;
+    
+    
     Rcpp::Rcout << "fishers at the ready - ";
     
     
@@ -197,7 +214,10 @@ Rcpp::List run_full_model_function(
         
         master_catch_by_length.slice(FLEET) += Rcpp::as<arma::mat>(catch_numbers_this_age[FLEET]); // accumulate the catch of every month, but keep the spatial structure
         
-        } // record how much catch there is this month and where.
+        if (MONTH == 5 && fleet_names[FLEET] == "shore_rec") { // June shore catches, zero-indexed
+          master_catch_by_length_june += Rcpp::as<arma::mat>(catch_numbers_this_age[FLEET]); // accumulate the catch of every month, but keep the spatial structure
+        }
+      } // record how much catch there is this month and where.
       
       
       // 5. grow fish ---------------------------------------------------------
@@ -254,7 +274,7 @@ Rcpp::List run_full_model_function(
       for (int AGE = 0; AGE < max_age; AGE++) {
         ssb_this_month += arma::accu(next_pop.slice(AGE) * maturity_x_haweight);
       }
-      master_SSB += PF * ssb_this_month / spawning_months.n_elem;      
+      master_SSB += PF * ssb_this_month / spawning_months.n_elem; // average SSB across spawning months
     
       Rcpp::Rcout << "fish spawned." << std::endl;
     
@@ -290,15 +310,16 @@ Rcpp::List run_full_model_function(
   
   
   return Rcpp::List::create(
-    Rcpp::Named("next_pop")           = next_pop, // cube (cell x lengt), needed to hand the december population to January of the next year in R 
+    Rcpp::Named("next_pop")           = next_pop, // cube (cell x length), needed to hand the december population to January of the next year in R 
     Rcpp::Named("master_current_pop") = master_current_pop, // month x (cell x length x age)
 
     Rcpp::Named("effort_by_fleet")    = master_effort_by_fleet, // cell x month x fleet
     
     Rcpp::Named("yearly_catch")       = master_yearly_catch, // vec of size n_fleet
-    Rcpp::Named("catch_by_length")    = master_catch_by_length,
+    Rcpp::Named("catch_by_length")    = master_catch_by_length, // cell x length x fleet. monthly data saved in R
+    Rcpp::Named("catch_by_length_june") = master_catch_by_length_june, // cell x length. this is saved yearly in R
     
-    Rcpp::Named("fishing_mortality")  = master_F, // month x fleet
+    Rcpp::Named("welfare")            =  welfare,
     
     Rcpp::Named("spawning_biomass")   = master_SSB  // single value
   );
