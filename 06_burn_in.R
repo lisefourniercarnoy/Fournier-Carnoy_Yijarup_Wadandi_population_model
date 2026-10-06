@@ -12,12 +12,12 @@
 
 # -----------------------------------------------------------------------------
 
+## 0. Load libraries ----------------------------------------------------------
+
 rm(list = ls())
 
-# Load libraries
 library(tidyverse) # for data manipulation
 library(sf) # for spatial objects
-#library(MQMF)
 library(Rcpp) # for reading the C++ functions in R
 library(RcppArmadillo) # for reading the C++ functions in R
 library(abind) # for dealing with arrays i think.
@@ -64,16 +64,15 @@ fleet_names <- c(
   "shore_rec")
 
 com_info <- readRDS("data/output_data/04_A_commercial_fishing_info.rds") %>% glimpse()
-com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
-
 brec_info <- readRDS("data/output_data/04_C_boat_rec_fishing_info.rds") %>% glimpse()
-brec_info$fishing_days[brec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
-
 srec_info <- readRDS("data/output_data/04_B_shore_rec_fishing_info.rds") %>% glimpse()
-srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10 # replace zero with small number to avoid calculations freaking out.
 
+# -- replace zeroes in the fishing effort to avoid C++ calculations from freaking out
+com_info$fishing_days[com_info$fishing_days == 0] <- 1e-10 
+brec_info$fishing_days[brec_info$fishing_days == 0] <- 1e-10
+srec_info$fishing_days[srec_info$fishing_days == 0] <- 1e-10
 
-# for the burn-in, we'll use a constant low level of fishing, so replace all years with 1900 fishing effort, catchability, etc.
+# -- for the burn-in, we'll use a constant low level of fishing, so replace all years with 1900 fishing effort, catchability, and attractivity.
 com_info$fishing_days[,,1:dim(com_info$fishing_days)[[3]]] <- com_info$fishing_days[,,1]
 brec_info$fishing_days[,,1:dim(brec_info$fishing_days)[[3]]] <- brec_info$fishing_days[,,1]
 srec_info$fishing_days[,,1:dim(srec_info$fishing_days)[[3]]] <- srec_info$fishing_days[,,1]
@@ -218,7 +217,7 @@ plot(1:max_year, total_pop, type = "l",
      xlab = "Year", ylab = "Total abundance",
      main = "Total Population during burn-in")
 
-saveRDS(BURN_IN_pop[[60]], "data/output_data/06_burn_in_population.rds")
+saveRDS(BURN_IN_pop[[60]]$Dec, "data/output_data/06_burn_in_population.rds")
 
 
 ### CHECK: spawning biomass ---------------------------------------------------
@@ -341,251 +340,3 @@ ggplot(yearly_catch) +
 
 ## END ##
 
-
-### CHECK: mega-plot ----------------------------------------------------------
-
-#### SECTION 1: effort distribution -------------------------------------------
-
-library(patchwork) # for combining plots with independent legends — verify installed
-
-water <- readRDS("data/output_data/02_watergrid.rds")
-bbox <- st_bbox(water)  # compute once outside the loop, since geometry doesn't change
-
-wa_map <- st_read("data/input_data/Q_aus_land_high_res_no_estuary.shp") |> st_as_sf()
-out_dir <- "plots/script_plot_checks/06/06_effort_distribution_plots/"
-
-# compute global max effort PER FLEET, across all years, months, and cells
-fleet_idx <- 1:3 # matches order in BURN_IN_effort's 3rd dimension: commercial, boat_rec, shore_rec
-global_max_effort <- sapply(fleet_idx, function(f) {
-  max(sapply(1:n_yrs_modelled, function(y) max(BURN_IN_effort[[y]][, , f])))
-})
-names(global_max_effort) <- fleet_names
-
-for (YEAR in 1:n_yrs_modelled) {
-  for (MONTH in 1:12) {
-    
-    water_year_month <- water %>%
-      mutate(
-        commercial = BURN_IN_effort[[YEAR]][, MONTH, 1],
-        boat_rec   = BURN_IN_effort[[YEAR]][, MONTH, 2],
-        shore_rec  = BURN_IN_effort[[YEAR]][, MONTH, 3]
-      )
-    
-    # build one plot per fleet, each with its own fixed scale
-    plot_list <- lapply(fleet_names, function(f) {
-      ggplot() +
-        geom_sf(data = wa_map, fill = "grey90", color = "grey40") +
-        geom_sf(data = water_year_month, aes(fill = .data[[f]]), color = NA) +
-        coord_sf(
-          xlim = c(bbox["xmin"], bbox["xmax"]),
-          ylim = c(bbox["ymin"], bbox["ymax"]),
-          expand = FALSE
-        ) +
-        scale_fill_gradient(
-          name = "Effort", low = "white", high = colour_palette[6],
-          limits = c(0, global_max_effort[[f]])
-        ) +
-        theme_minimal() +
-        ggtitle(f)
-    })
-
-    p <- wrap_plots(plot_list, nrow = 1) +
-      plot_annotation(title = paste0("Fishing effort by fleet — Year ", YEAR, ", Month ", MONTH))
-    
-    ggsave(
-      filename = file.path(
-        out_dir,
-        sprintf("effort_year%02d_month%02d.png", YEAR, MONTH)
-      ),
-      plot = p, width = 10, height = 7, dpi = 300
-    )
-    
-  }
-}
-
-
-#### SECTION 2: length distributions ------------------------------------------
-
-n_years_done <- length(BURN_IN_pop_monthly)
-
-# precompute December age/size structure for every year first
-age_structure_all  <- matrix(NA_real_, nrow = max_age, ncol = n_years_done)
-size_structure_all <- matrix(NA_real_, nrow = n_lengths, ncol = n_years_done)
-
-for (YEAR in 1:n_years_done) {
-  total_by_length_age <- apply(BURN_IN_pop_monthly[[YEAR]][[12]], c(2, 3), sum)
-  age_structure_all[, YEAR]  <- colSums(total_by_length_age)  # summed over lengths
-  size_structure_all[, YEAR] <- rowSums(total_by_length_age)  # summed over ages
-}
-
-# fixed axis limits across all years, so scale doesn't jump between plots
-age_ylim  <- c(0, max(age_structure_all, na.rm = TRUE))
-size_ylim <- c(0, max(size_structure_all, na.rm = TRUE))
-
-for (YEAR in 1:n_years_done) {
-  
-  png(
-    filename = file.path(
-      "plots/script_plot_checks/06/06_age_length_structures/",
-      sprintf("BURN_IN_year_%04d.png", YEAR)
-    ),
-    width = 1200, height = 500, res = 120
-  )
-  
-  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-  
-  # --- age structure panel ---
-  plot(age_structure_all[, YEAR],
-       type = "n", # empty frame first, so we can layer lines under it
-       ylim = age_ylim,
-       xlab = "Age class", ylab = "Total abundance",
-       main = paste0("Age structure — Year ", YEAR))
-  
-  if (YEAR > 1) {
-    for (past_yr in 1:(YEAR - 1)) {
-      # older years get progressively lighter/more transparent
-      fade <- 0.15 + 0.55 * (past_yr / (YEAR - 1))  # ranges ~0.15 (oldest) to ~0.7 (most recent past)
-      lines(age_structure_all[, past_yr],
-            lwd = 1.5,
-            col = adjustcolor(colour_palette[6], alpha.f = fade))
-    }
-  }
-  lines(age_structure_all[, YEAR], lwd = 2, col = colour_palette[6])
-  
-  # --- size structure panel ---
-  plot(size_structure_all[, YEAR],
-       type = "n",
-       ylim = size_ylim,
-       xlab = "Length bin", ylab = "Total abundance",
-       main = paste0("Size structure — Year ", YEAR))
-  
-  if (YEAR > 1) {
-    for (past_yr in 1:(YEAR - 1)) {
-      fade <- 0.15 + 0.55 * (past_yr / (YEAR - 1))
-      lines(size_structure_all[, past_yr],
-            lwd = 1.5,
-            col = adjustcolor(colour_palette[4], alpha.f = fade))
-    }
-  }
-  lines(size_structure_all[, YEAR], lwd = 2, col = colour_palette[4])
-  
-  dev.off()
-}
-
-
-#### SECTION 3: Annual catch --------------------------------------------------
-
-out_dir_catch <- "plots/script_plot_checks/06/06_catch/"
-dir.create(out_dir_catch, recursive = TRUE, showWarnings = FALSE)
-
-yearly_catch <- as.data.frame(BURN_IN_catch_weight)
-names(yearly_catch) <- fleet_names
-yearly_catch$year <- 1:n_yrs_modelled
-
-catch_df <- yearly_catch %>%
-  pivot_longer(cols = all_of(fleet_names), names_to = "fleet", values_to = "catch")
-
-global_max_catch <- max(catch_df$catch, na.rm = TRUE)
-global_max_year  <- max(catch_df$year, na.rm = TRUE)
-
-frame_i <- 0
-
-for (YEAR in 1:n_yrs_modelled) {
-
-    frame_i <- frame_i + 1
-    frame_df <- catch_df %>% filter(year <= YEAR) # only full years are "known"
-    
-    p <- ggplot(frame_df, aes(x = year, y = catch, colour = fleet)) +
-      geom_line(lwd = 1) +
-      scale_colour_manual(values = c(commercial = "red", boat_rec = "blue", shore_rec = "green")) +
-      coord_cartesian(xlim = c(1, global_max_year), ylim = c(0, global_max_catch)) +
-      labs(x = "Year", y = "Catch (kg)",
-           title = paste0("Catch by fleet — Year ", YEAR)) +
-      theme_bw()
-    
-    ggsave(
-      filename = file.path(out_dir_catch, sprintf("catch_frame_%04d.png", frame_i)),
-      plot = p, width = 10, height = 5, dpi = 120
-    )
-}
-
-
-#### SECTION 4: fish distribution ---------------------------------------------
-
-water <- readRDS("data/output_data/02_watergrid.rds")
-bbox  <- st_bbox(water)
-
-wa_map <- st_read("data/input_data/Q_aus_land_high_res_no_estuary.shp") |> st_as_sf()
-out_dir_length <- "plots/script_plot_checks/06/06_movement/"
-dir.create(out_dir_length, recursive = TRUE, showWarnings = FALSE)
-
-length_bins <- readRDS("data/output_data/05_length_bins.rds") # numeric vector, length n_lengths
-
-# group the 50mm bins into 200mm groups (4 bins per group), based on actual bin values
-group_breaks <- seq(floor(min(length_bins) / 200) * 200,
-                    ceiling(max(length_bins) / 200) * 200,
-                    by = 200)
-
-length_group <- cut(length_bins,
-                    breaks = group_breaks,
-                    include.lowest = TRUE, right = FALSE)
-
-group_levels <- levels(length_group)
-
-# compute global max abundance per 200mm group, across ALL years AND months, for a fixed colour scale
-cell_totals_all <- lapply(1:n_yrs_modelled, function(YEAR) {
-  lapply(1:12, function(MONTH) {
-    pop_this_month <- BURN_IN_pop_monthly[[YEAR]][[MONTH]] # cell x length x age
-    sapply(group_levels, function(g) {
-      length_idx <- which(length_group == g)
-      apply(pop_this_month[, length_idx, , drop = FALSE], 1, sum)
-    })
-  })
-}) %>% unlist(recursive = FALSE)
-
-global_max_by_group <- apply(
-  do.call(rbind, cell_totals_all), 2, max, na.rm = TRUE
-)
-names(global_max_by_group) <- group_levels
-global_max_all <- max(global_max_by_group) # single scale across ALL groups, years, months
-
-for (YEAR in 1:n_yrs_modelled) {
-  for (MONTH in 1:12) {
-    
-    pop_this_month <- BURN_IN_pop_monthly[[YEAR]][[MONTH]] # cell x length x age
-    
-    length_df <- lapply(group_levels, function(g) {
-      length_idx <- which(length_group == g)
-      cell_totals <- apply(pop_this_month[, length_idx, , drop = FALSE], 1, sum)
-      water_g <- water
-      water_g$fish <- cell_totals
-      water_g$length_group <- factor(g, levels = group_levels)
-      water_g
-    }) %>%
-      bind_rows()
-    
-    p <- ggplot() +
-      geom_sf(data = wa_map, fill = "grey90", color = "grey40") +
-      geom_sf(data = length_df, aes(fill = fish), color = NA) +
-      coord_sf(
-        xlim = c(bbox["xmin"], bbox["xmax"]),
-        ylim = c(bbox["ymin"], bbox["ymax"]),
-        expand = FALSE
-      ) +
-      scale_fill_gradient(
-        name = "Fish", low = "white", high = colour_palette[5],
-        limits = c(0, global_max_all)
-      ) +
-      facet_wrap(~ length_group, nrow = 1) +
-      theme_minimal() +
-      ggtitle(paste0("Fish distribution by length group (200mm) — Year ", YEAR, ", Month ", MONTH))
-    
-    ggsave(
-      filename = file.path(
-        out_dir_length,
-        sprintf("length_dist_year%02d_month%02d.png", YEAR, MONTH)
-      ),
-      plot = p, width = 14, height = 8, dpi = 500
-    )
-  }
-}
