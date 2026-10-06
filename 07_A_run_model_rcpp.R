@@ -17,37 +17,13 @@
 rm(list = ls())
 
 library(tidyverse) # for data manipulation
-library(sf) # for dealing with shapefiles
-library(terra) # for the bathy layer
-library(forcats)
-library(RColorBrewer)
 library(Rcpp) # to execute C++ functions
 library(RcppArmadillo) # to execute C++ functions
-library(gmailr) # to send emails via R
-library(abind) # to deal with cubes 
-
-library(parallel) # to run multiple simulations in parallel
-library(doParallel) # to run multiple simulations in parallel
-
-
-
-## Set up to send emails when finished running --------------------------------
-
-# This only needs to be done once.
-# rappdirs::user_data_dir("gmailr")
-# path_old <- "data/backend_files/client_secret_75883251379-aboc07p3og08ohtu8ea030l87j6fnb96.apps.googleusercontent.com.json"
-# d <- fs::dir_create(rappdirs::user_data_dir("gmailr"), recurse=TRUE) # create directory for the gmailr app
-# fs::file_move(path_old, d) # place JSON file where gmailr expects it
-# # client secret: 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 (for use in console.cloud.google.com)
-# gm_auth_configure()
-# gm_oauth_client()
-# gm_auth() # R is now able to compose and send emails from address: lise.fourniercarnoy@marineecology.io
-
 
 ## Read in functions ----------------------------------------------------------
 
 sourceCpp("functions/age-length_functions/run_full_model_function.cpp", verbose = TRUE)
-current_scenario <- "reconstruction"
+
 
 ## Load files  ----------------------------------------------------------------
 
@@ -64,7 +40,7 @@ max_age     <- 40 # The max age of the fish in the model, see script 05 for corr
 n_lengths   <- length(readRDS("data/output_data/05_length_bins.rds"))
 max_year    <- n_yrs_modelled # Number of years the model should run for 
 
-current_pop   <- readRDS("data/output_data/06_burn_in_population.rds")$Dec %>% glimpse()
+current_pop   <- readRDS("data/output_data/06_burn_in_population.rds") %>% glimpse()
 weight        <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
 selectivity   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME FOR ALL FLEETS BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
 nat_mort      = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
@@ -104,16 +80,22 @@ fleet_info = list(com_info,
 
 ## start the simulation -------------------------------------------------------
 
-RECONS_pop <- list() # keep record of the burn-in outputs
-months_to_save <- c(Jan = 1, Feb = 2, Mar = 3, # which months to  sve for plot checks
-                    Apr = 4, May = 5, Jun = 6, 
-                    Jul = 7, Aug = 8, Sep = 9, 
-                    Oct = 10, Nov = 11, Dec = 12)
+# fish outputs to keep
+RECONS_pop <- list()
+RECONS_SSB <- data.frame(
+  year = 1900:2024,
+  SSB = NA
+)
 
-RECONS_effort <- list() # cell x month x fleet, one array per year
-RECONS_F <- list() # one 12 x n_fleets matrix per year
+# fishing outputs to keep
+RECONS_effort <- list()
 RECONS_catch_weight <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); colnames(RECONS_catch_weight) <- fleet_names
-RECONS_SSB <- list()
+RECONS_catch_length <- array(0, dim = c(n_yrs_modelled, n_lengths, length(fleet_names)))
+RECONS_catch_june <- array(0, dim = c(n_yrs_modelled, n_lengths))
+RECONS_welfare <- data.frame(
+  year = 1900:2024,
+  welfare = 0
+)
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
@@ -147,345 +129,53 @@ for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
   # save the population at the end of the year (to give to the loop again as January population)
   current_pop <- ModelOutput$next_pop #  cell x length x age
   
+  # desired outputs are: 
   
-  # fill objects to check after the burn-in
-  RECONS_pop[[YEAR+1]]         <- setNames(ModelOutput$master_current_pop[months_to_save], names(months_to_save))
-  RECONS_effort[[YEAR+1]]      <- ModelOutput$effort_by_fleet # array: cell x month x fleet
-  RECONS_F[[YEAR+1]]           <- ModelOutput$fishing_mortality
-  RECONS_catch_weight[YEAR+1,] <- ModelOutput$yearly_catch
-  RECONS_SSB[[YEAR+1]]         <- ModelOutput$spawning_biomass  # cell, summed across spawning months
+  # overall population (spatially, length-structured, over months & years)
+  temp_pop_year <- array(0, dim = c(max_cell, n_lengths, 12))
+  for (MONTH in 1:12) {
+    temp_pop_month <- rowSums(ModelOutput$master_current_pop[[MONTH]], dims = 2) # sum across ages - we don't really care about data across years.
+    temp_pop_year[,,MONTH] <- temp_pop_month
+    RECONS_pop[[YEAR+1]] <- temp_pop_year
+  } # -- population into a year x (cell x lengths x months) array
   
-  # # add a plot check, to avoid wasting time on running the function
-  # total_by_length_age <- apply(ModelOutput$master_current_pop[[12]], c(2, 3), sum)
-  # age_structure       <- colSums(total_by_length_age)   # summed over lengths
-  # size_structure       <- rowSums(total_by_length_age)   # summed over ages
-  # 
-  # png(
-  #   filename = file.path("plots/script_plot_checks/06/06_age_length_structures/", sprintf("recons_year_%04d.png", YEAR + 1)),
-  #   width = 1200, height = 500, res = 120
-  # )
-  # 
-  # par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-  # 
-  # plot(age_structure,
-  #      type = "l", lwd = 2, col = colour_palette[6],
-  #      xlab = "Age class", ylab = "Total abundance",
-  #      main = paste0("Age structure — Year ", YEAR + 1))
-  # 
-  # plot(size_structure,
-  #      type = "l", lwd = 2, col = colour_palette[4],
-  #      xlab = "Length bin", ylab = "Total abundance",
-  #      main = paste0("Size structure — Year ", YEAR + 1))
-  # 
-  # dev.off()
+  # spawning biomass (single value per year, the average SSB during spawning months)
+  RECONS_SSB[YEAR+1, "SSB"] <- ModelOutput$spawning_biomass # vector of length n_years
+
+  # fishing effort spatial distribution
+  RECONS_effort[[YEAR+1]] <- ModelOutput$effort_by_fleet # cell x month x fleet
+  
+  # annual catch by fleet
+  RECONS_catch_weight[YEAR+1,] <- ModelOutput$yearly_catch  # year x fleet of catch sums
+  
+  # number of fish per length caught
+  for(FLEET in 1:3) {
+    RECONS_catch_length[YEAR+1,,FLEET] <- colSums(ModelOutput$catch_by_length[,,FLEET])
+    } # years x length x fleets
+  
+  # wadandi catch (number of fish caught by shore rec fishers in June)
+  RECONS_catch_june[YEAR+1,]   <- colSums(ModelOutput$catch_by_length_june) # years x lengths
+  
+  # welfare
+  RECONS_welfare[YEAR+1, "welfare"] <- ModelOutput$welfare
 }
 
 End = Sys.time()
 Runtime = End - Start
 Runtime
-    
 
-### CHECK: population trends over time ----------------------------------------
+final_output <- list(population = RECONS_pop,
+                     SSB = RECONS_SSB,
+                     fishing_effort = RECONS_effort,
+                     catch_weight = RECONS_catch_weight,
+                     catch_length = RECONS_catch_length,
+                     shore_catch_june = RECONS_catch_june,
+                     boat_rec_welfare = RECONS_welfare
+                     )
+saveRDS(final_output, file = "data/output_data/07_A_reconstruction_outputs.rds")
 
-total_pop <- sapply(RECONS_pop, function(year_list) {
-  sum(sapply(year_list, sum))
-})
-
-plot(1:max_year, total_pop, type = "l",
-     xlab = "Year", ylab = "Total abundance",
-     main = "Total Population during reconstruction")
-
-pop <- RECONS_pop[124][[1]]$Dec
-saveRDS(pop, "data/output_data/07_end_reconstruction_pop.rds")
-
-
-### CHECK: age and length structure in the last time step ---------------------
-
-total_by_length_age <- apply(current_pop, c(2,3), sum)
-age_structure <- colSums(total_by_length_age)
-size_structure <- rowSums(total_by_length_age)
-
-par(mfrow = c(1, 2))
-plot(age_structure, type = "l", xlab = "Age", ylab = "Total abundance",
-main = "Age structure")
-plot(size_structure, type = "l", xlab = "Length bin", ylab = "Total abundance",
-main = "Size structure")
-
-
-### CHECK: spawning biomass ---------------------------------------------------
-
-SSB0 <- readRDS("data/output_data/06_burn_in_SSB0.rds")
-SSB_timeseries <- sapply(RECONS_SSB, sum)  # sum over cells, one value per year
-SSB_ss <- read.csv("data/input_data/digitised_plots_for_checking/SSB_digitised_from_stock_assessment.csv") |> 
-  arrange(year)
-
-B_rel <- SSB_timeseries / SSB0
-par(mfrow = c(1, 1))
-
-# below, the red line should align on the blue as best as possible.
-plot(x = SSB_ss$year, SSB_ss$SSB, lwd = 2, col = "steelblue", type = "l", ylim = c(0, 1),
-     xlab = "Year", ylab = "SSB relative to 1900",
-     main = "Effective reproductive output")
-lines(x = 1975:2025, y = B_rel[75:125], col = "firebrick", lwd = 2)
-# here we are checking whether the relative SSB (this year's SSB/SSB0) matches the stock assessment.
-
-### fish density --------------------------------------------------------------
-
-water <- readRDS("data/output_data/02_watergrid.rds")
-ages_to_plot <- c(1, 2)
-months_to_plot <- 1:12
-year_to_plot <- 120
-
-age_month_df <- lapply(months_to_plot, function(m) {
-  lapply(ages_to_plot, function(a) {
-    cell_totals <- apply(RECONS_pop[[year_to_plot]][[m]][,, a], 1, sum)
-    water$fish <- cell_totals
-    water$age <- factor(paste("Age", a), levels = paste("Age", ages_to_plot))
-    water$month <- factor(month.abb[m], levels = month.abb)
-    water
-  }) %>% bind_rows()
-}) %>% bind_rows()
-
-ggplot(age_month_df) +
-  geom_sf(aes(fill = fish), color = NA) +
-  scale_fill_viridis_c(name = "Fish") +
-  facet_grid(age ~ month) +
-  theme_void() +
-  ggtitle(paste0("Fish distribution by age and month (year ", year_to_plot, ")"))
-
-
-### relative catch of fleets --------------------------------------------------
-
-yearly_catch <- as.data.frame(RECONS_catch_weight)
-names(yearly_catch) <- fleet_names
-ggplot(yearly_catch[75:124,]) +
-  geom_line(lwd = 1, aes(x = 75:124, y = commercial), colour = "red") +
-  geom_line(lwd = 1, aes(x = 75:124, y = boat_rec), colour = "blue") +
-  geom_line(lwd = 1, aes(x = 75:124, y = shore_rec), colour = "green") +
-  labs(x = "Year", y = "Catch (kg)", title = "Annual catch by fleet") +
-  theme_bw()
-
-
-### CHECK: effort distribution ------------------------------------------------
-
-water <- readRDS("data/output_data/02_watergrid.rds")
-year_to_plot = 120
-water_effort <- water %>%
-  mutate(
-    commercial = RECONS_effort[[year_to_plot]][, 12, 1],
-    boat_rec   = RECONS_effort[[year_to_plot]][, 12, 2],
-    shore_rec  = RECONS_effort[[year_to_plot]][, 12, 3]
-  ) %>%
-  pivot_longer(
-    cols = c(commercial, boat_rec, shore_rec),
-    names_to = "fleet",
-    values_to = "effort"
-  )
-
-ggplot(water_effort) +
-  geom_sf(aes(fill = effort), color = NA) +
-  scale_fill_viridis_c(name = "Effort") +
-  facet_wrap(~ fleet, nrow = 1) +
-  theme_void() +
-  ggtitle("Fishing effort by fleet (ultimate year, Month 12)")
-
-
-plot_data <- water_effort[water_effort$fleet == "commercial", c("effort")] # keeps geometry automatically
-
-mapview::mapview(plot_data,
-                 zcol = "effort",
-                 #col.regions = viridisLite::viridis(100),
-                 layer.name = "Effort")
-
+# save the population that will be used in the forecasting
+last_population <- ModelOutput$master_current_pop[[12]]
+saveRDS(last_population, file = "data/output_data/07_A_last_population.rds")
 
 ### END ###
-
-
-# Run multiple simulations ----------------------------------------------------
-
-burned_in_pop <- current_pop # this will be the population we use as a start point for all simulations
-
-run_one_simulation <- function(SIM,
-                               
-                               YEAR,
-                               max_cell,
-                               max_age,
-                               max_year,
-                               n_lengths,
-                               burned_in_pop,
-                               weight,
-                               selectivity,
-                               age_transition,
-                               nat_mort,
-                               spawn_months,
-                               BHa,
-                               BHb,
-                               PF,
-                               hyperallo,
-                               mature,
-                               settlement,
-                               adult_movement,
-                               juv_movement,
-                               s_spawn_movement,
-                               l_spawn_movement,
-                               fleet_names,
-                               fleet_info
-                               
-) {
-  
-  current_pop <- burned_in_pop
-  
-  RECONS_pop <- list() # keep record of the burn-in outputs
-  months_to_save <- c(Jan = 1, Feb = 2, Mar = 3, # which months to  sve for plot checks
-                      Apr = 4, May = 5, Jun = 6, 
-                      Jul = 7, Aug = 8, Sep = 9, 
-                      Oct = 10, Nov = 11, Dec = 12)
-  
-  RECONS_effort <- list() # cell x month x fleet, one array per year
-  RECONS_F <- list() # one 12 x n_fleets matrix per year
-  RECONS_catch_weight <- array(0, dim = c(n_yrs_modelled, length(fleet_names))); colnames(RECONS_catch_weight) <- fleet_names
-  RECONS_SSB <- list()
-  
-  for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
-    
-    # loop over all the Rcpp functions in the model
-    ModelOutput <- run_full_model_function(YEAR = YEAR,
-                                           max_cell = max_cell,
-                                           max_age = max_age,
-                                           max_year = max_year,
-                                           n_lengths = n_lengths,
-                                           current_pop = current_pop,
-                                           weight = weight,
-                                           selectivity = selectivity,
-                                           age_transition = age_transition,
-                                           natural_mortality = nat_mort,
-                                           spawning_months = spawn_months,
-                                           BHa = BHa,
-                                           BHb = BHb,
-                                           PF = PF,
-                                           ha_scaling = hyperallo,
-                                           maturity = mature,
-                                           settlement = settlement,
-                                           adult_movement_prob = adult_movement,
-                                           juv_movement_prob = juv_movement,
-                                           small_spawn_movement_prob = s_spawn_movement,
-                                           large_spawn_movement_prob = l_spawn_movement,
-                                           fleet_names = fleet_names,
-                                           fleet_info = fleet_info
-    )
-    
-    # save the population at the end of the year (to give to the loop again as January population)
-    current_pop <- ModelOutput$next_pop #  cell x length x age
-    
-    # fill objects to check after the burn-in
-    RECONS_pop[[YEAR+1]]         <- setNames(ModelOutput$master_current_pop[months_to_save], names(months_to_save))
-    RECONS_effort[[YEAR+1]]      <- ModelOutput$effort_by_fleet # array: cell x month x fleet
-    RECONS_F[[YEAR+1]]           <- ModelOutput$fishing_mortality
-    RECONS_catch_weight[YEAR+1,] <- ModelOutput$yearly_catch
-    RECONS_SSB[[YEAR+1]]         <- ModelOutput$spawning_biomass  # cell, summed across spawning months
-
-  }    
-  
-  list(
-    SIM = SIM,
-    RECONS_pop = RECONS_pop,
-    RECONS_effort = RECONS_effort,
-    RECONS_F = RECONS_F,
-    RECONS_catch_weight = RECONS_catch_weight,
-    RECONS_SSB = RECONS_SSB
-  )
-  
-}
-
-
-## start the simulation -------------------------------------------------------
-
-n_cores <- 2
-n_sim <- 2
-
-library(parallel)
-library(doParallel)
-
-
-### 1 setup multiple workers --------------------------------------------------
-
-cl <- parallel::makeCluster(n_cores, outfile = file.path("data/output_data/07_reconstruction_simulations/cluster_log.txt"))
-doParallel::registerDoParallel(cl)
-
-fun_dir_cpp <- file.path("functions/age-length_functions/run_full_model_function.cpp")
-
-
-### 2 compile the functions for every worker ----------------------------------
-
-parallel::clusterCall(cl, function(path) {
-  library(Rcpp)
-  library(RcppArmadillo)
-  Rcpp::sourceCpp(path)
-  exists("run_full_model_function")
-}, path = fun_dir_cpp)
-
-
-### 3 start the simulations ---------------------------------------------------
-
-all_sim_results <- foreach( # split the work across the workers
-  SIM = 1:n_sim,
-  .export = c("burned_in_pop", 
-              "max_cell", 
-              "max_age", 
-              "max_year", 
-              "n_lengths",
-              "weight", 
-              "selectivity", 
-              "age_transition", 
-              "nat_mort", 
-              "spawn_months",
-              "BHa", 
-              "BHb", 
-              "PF", 
-              "hyperallo", 
-              "mature",
-              "settlement",
-              "adult_movement",
-              "juv_movement",
-              "s_spawn_movement",
-              "l_spawn_movement",
-              "fleet_names", 
-              "fleet_info", 
-              "run_one_simulation"
-  )
-) %dopar% { # ... and get to work
-  
-  run_one_simulation(
-    SIM = SIM,
-    burned_in_pop = burned_in_pop,
-    max_cell = max_cell, 
-    max_age = max_age, 
-    max_year = max_year, 
-    n_lengths = n_lengths,
-    weight = weight, 
-    selectivity = selectivity, 
-    age_transition = age_transition,
-    nat_mort = nat_mort, 
-    spawn_months = spawn_months,
-    BHa = BHa, 
-    BHb = BHb, 
-    PF = PF, 
-    hyperallo = hyperallo,
-    mature = mature, 
-    settlement = settlement, 
-    adult_movement = adult_movement,
-    juv_movement = juv_movement,
-    s_spawn_movement = s_spawn_movement,
-    l_spawn_movement = l_spawn_movement,
-    fleet_names = fleet_names, 
-    fleet_info = fleet_info
-    
-  )
-}
-
-parallel::stopCluster(cl)
-
-sapply(all_sim_results, function(x) sum(sapply(x$RECONS_pop, is.null)))
-
-identical(all_sim_results[[1]]$RECONS_SSB, all_sim_results[[2]]$RECONS_SSB)
-
