@@ -219,6 +219,9 @@ plot(1:max_year, total_pop, type = "l",
 
 saveRDS(BURN_IN_pop[[60]]$Dec, "data/output_data/06_burn_in_population.rds")
 
+# and to the HPC folder
+saveRDS(BURN_IN_pop[[60]]$Dec, "data/output_data/HPC_files/06_burn_in_population.rds")
+
 
 ### CHECK: spawning biomass ---------------------------------------------------
 

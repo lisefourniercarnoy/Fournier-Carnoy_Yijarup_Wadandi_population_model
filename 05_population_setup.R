@@ -612,4 +612,17 @@ saveRDS(weight, file = "data/output_data/05_weight.rds")
 saveRDS(alpha, file = "data/output_data/05_Beverton-Holt_alpha.rds")
 saveRDS(beta, file = "data/output_data/05_Beverton-Holt_beta.rds")
 
+
+# and save to the HPC folder
+saveRDS(age_length_starting_pop, file = paste0("data/output_data/HPC_files/05_starting_population.rds"))
+saveRDS(bin_mids, file = "data/output_data/HPC_files/05_length_bins.rds")
+saveRDS(ATM, "data/output_data/HPC_files/05_age_transition_matrix.rds")
+saveRDS(selectivity, file = "data/output_data/HPC_files/05_selectivity.rds")
+saveRDS(sel_ret, file = "data/output_data/HPC_files/05_selectivity_retention.rds")
+saveRDS(maturity, file = "data/output_data/HPC_files/05_maturity.rds")
+saveRDS(weight, file = "data/output_data/HPC_files/05_weight.rds")
+saveRDS(alpha, file = "data/output_data/HPC_files/05_Beverton-Holt_alpha.rds")
+saveRDS(beta, file = "data/output_data/HPC_files/05_Beverton-Holt_beta.rds")
+
+
 ### END ###

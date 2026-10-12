@@ -817,6 +817,9 @@ names(fishing_info_list) <- c("catchability",
 
 saveRDS(fishing_info_list, "data/output_data/04_A_commercial_fishing_info.rds")
 
+# add to HPC folder
+saveRDS(fishing_info_list, "data/output_data/HPC_files/04_A_commercial_fishing_info.rds")
+
 
 ## 6. Setting up effort for the burn-in ---------------------------------------
 

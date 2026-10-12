@@ -876,4 +876,12 @@ saveRDS(large_spawning_cell_movement_probability, paste0("data/output_data/03_B_
 saveRDS(juv_cell_movement_probability, paste0("data/output_data/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
 saveRDS(recruitment, "data/output_data/03_B_recruitment.rds")
 
+# save also in HPC folder
+saveRDS(adult_cell_movement_probability, paste0("data/output_data/HPC_files/03_B_adult_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(small_spawning_cell_movement_probability, paste0("data/output_data/HPC_files/03_B_small_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(large_spawning_cell_movement_probability, paste0("data/output_data/HPC_files/03_B_large_spawning_movement_", swim_speed_adult, "_swim_speed.rds"))
+saveRDS(juv_cell_movement_probability, paste0("data/output_data/HPC_files/03_B_juv_movement_", swim_speed_juv, "_swim_speed.rds"))
+saveRDS(recruitment, "data/output_data/HPC_files/03_B_recruitment.rds")
+
+
 ### END ###
