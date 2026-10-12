@@ -25,13 +25,9 @@ library(RcppArmadillo) # to execute C++ functions
 sourceCpp("functions/age-length_functions/run_full_model_function.cpp", verbose = TRUE)
 
 
-## Load files  ----------------------------------------------------------------
-
-colour_palette <- eval(parse(text = readLines("yijarup_chapter_colours.txt")))
-water <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
-
-
 ## Get model parameters -------------------------------------------------------
+
+water <- readRDS("data/output_data/02_watergrid.rds"); plot(water$geometry)
 
 n_yrs_modelled <- 2024-1900 # number of years to simulate
 
@@ -43,20 +39,20 @@ max_year    <- n_yrs_modelled # Number of years the model should run for
 current_pop   <- readRDS("data/output_data/06_burn_in_population.rds") %>% glimpse()
 weight        <- readRDS("data/output_data/05_weight.rds") %>% glimpse()
 selectivity   <- readRDS("data/output_data/05_selectivity_retention.rds") %>% glimpse()# FOR NOw THEY ARE THE SAME FOR ALL FLEETS BUT SHOULD END UP BEING DIFFERENT AT SOME POINT
-nat_mort      = 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
+nat_mort      <- 0.12 # from table 4.2, p12 https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1240&context=fr_rr
 
 spawn_months <- c(10, 11, 12) # 1-indexed. the function deals with zero-indexing it.
-BHa           = as.double(readRDS("data/output_data/05_Beverton-Holt_alpha.rds")) # see script 05
-BHb           = as.double(readRDS("data/output_data/05_Beverton-Holt_beta.rds")) # see script 05
-PF            = 0.5 # proportion expected to be females
-hyperallo     = (1.26 + 1.14 + 1.33)/3 # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
+BHa          <-  as.double(readRDS("data/output_data/05_Beverton-Holt_alpha.rds")) # see script 05
+BHb          <- as.double(readRDS("data/output_data/05_Beverton-Holt_beta.rds")) # see script 05
+PF           <- 0.5 # proportion expected to be females
+hyperallo    <- mean(1.26, 1.14, 1.33) # average from 3 Sparids in Barneche 2018 (1.26, 1.14 and 1.33)
 mature         <- readRDS("data/output_data/05_maturity.rds") %>% glimpse()
 settlement     <- readRDS("data/output_data/03_B_recruitment.rds") %>% glimpse(); settlement <- settlement[, 1] # selecting a single column because the function expects a vector
 age_transition <- readRDS("data/output_data/05_age_transition_matrix.rds") %>% glimpse()
-adult_movement <- readRDS("data/output_data/03_b_adult_movement_15_swim_speed.rds") %>% glimpse()
-juv_movement   <- readRDS("data/output_data/03_b_juv_movement_10_swim_speed.rds") %>% glimpse()
-l_spawn_movement <- readRDS("data/output_data/03_b_large_spawning_movement_15_swim_speed.rds") %>% glimpse()
-s_spawn_movement <- readRDS("data/output_data/03_b_small_spawning_movement_15_swim_speed.rds") %>% glimpse()
+adult_movement <- readRDS("data/output_data/03_B_adult_movement_15_swim_speed.rds") %>% glimpse()
+juv_movement   <- readRDS("data/output_data/03_B_juv_movement_10_swim_speed.rds") %>% glimpse()
+l_spawn_movement <- readRDS("data/output_data/03_B_large_spawning_movement_15_swim_speed.rds") %>% glimpse()
+s_spawn_movement <- readRDS("data/output_data/03_B_small_spawning_movement_15_swim_speed.rds") %>% glimpse()
 
 fleet_names <- c(
   "commercial", 
@@ -96,6 +92,8 @@ RECONS_welfare <- data.frame(
   year = 1900:2024,
   welfare = 0
 )
+
+set.seed(RUN) # somehow get the SLURM job script to generate a seed for each run i, so that the seed is set.seed(i)
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
