@@ -93,7 +93,7 @@ RECONS_welfare <- data.frame(
   welfare = 0
 )
 
-set.seed(RUN) # somehow get the SLURM job script to generate a seed for each run i, so that the seed is set.seed(i)
+#set.seed(RUN) # somehow get the SLURM job script to generate a seed for each run i, so that the seed is set.seed(i)
 
 Start = Sys.time()
 for (YEAR in 0:(max_year-1)){ # max_year-1 because it starts at 0.
