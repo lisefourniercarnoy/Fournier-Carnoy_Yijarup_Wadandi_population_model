@@ -170,7 +170,9 @@ final_output <- list(population = RECONS_pop,
                      shore_catch_june = RECONS_catch_june,
                      boat_rec_welfare = RECONS_welfare
                      )
-saveRDS(final_output, file = "data/output_data/07_A_reconstruction_outputs.rds")
+#saveRDS(final_output, file = "data/output_data/07_A_reconstruction_outputs.rds")
+saveRDS(final_output, file = "07_A_reconstruction_outputs.rds") # this is for the HPC
+
 
 # save the population that will be used in the forecasting
 last_population <- ModelOutput$master_current_pop[[12]]
