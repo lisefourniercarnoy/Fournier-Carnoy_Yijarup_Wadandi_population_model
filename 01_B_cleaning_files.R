@@ -232,88 +232,123 @@ water_polygon <- st_difference(temp, st_union(wa_map)); plot(water_polygon, col 
 water_offshore_polygon <- st_difference(water_polygon, st_union(buf)) %>% st_transform(common_crs); plot(water_offshore_polygon, col = NA, border = "red", lwd = 2)
 
 
-# over north area
-small_grd_north <- st_make_grid(bbox_north, cellsize = 4000, square = T) %>% # 2000m x 2000m square, or 4km2
-  st_as_sf() %>% 
-  st_transform(common_crs); plot(small_grd_north)
+# # over north area
+# small_grd_north <- st_make_grid(bbox_north, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
+#   st_as_sf() %>% 
+#   st_transform(common_crs); plot(small_grd_north)
+# 
+# small_grd_north <- st_intersection(small_grd_north, buf) %>% 
+#   st_make_valid() %>%
+#   st_transform(common_crs) %>% 
+#   dplyr::select(x)
+# 
+# small_grd_north <- st_intersection(small_grd_north, bbox_north) %>% 
+#   st_as_sf() %>% 
+#   st_collection_extract("POLYGON"); plot(small_grd_north)
+# 
+# small_grd_north$type <- "shore_north"
+# 
+# 
+# # over wadandi area
+# small_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
+#   st_as_sf() %>% 
+#   st_transform(common_crs); plot(small_grd_wadandi)
+# 
+# small_grd_wadandi <- st_intersection(small_grd_wadandi, buf) %>% 
+#   st_make_valid() %>%
+#   st_transform(common_crs) %>% 
+#   dplyr::select(x)
+# 
+# small_grd_wadandi <- st_intersection(small_grd_wadandi, bbox_wadandi) %>% 
+#   st_as_sf() %>% 
+#   st_collection_extract("POLYGON"); plot(small_grd_wadandi)
+# 
+# small_grd_wadandi$type <- "shore_wadandi"
 
-small_grd_north <- st_intersection(small_grd_north, buf) %>% 
+
+small_grd <- st_make_grid(bbox_whole, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
+  st_as_sf() %>%
+  st_transform(common_crs); plot(small_grd)
+
+small_grd <- st_intersection(small_grd, buf) %>%
   st_make_valid() %>%
-  st_transform(common_crs) %>% 
+  st_transform(common_crs) %>%
   dplyr::select(x)
 
-small_grd_north <- st_intersection(small_grd_north, bbox_north) %>% 
-  st_as_sf() %>% 
-  st_collection_extract("POLYGON"); plot(small_grd_north)
+small_grd <- st_intersection(small_grd, bbox_whole) %>%
+  st_as_sf() %>%
+  st_collection_extract("POLYGON"); plot(small_grd)
 
-small_grd_north$type <- "shore_north"
-
-
-# over wadandi area
-small_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 2000, square = T) %>% # 2000m x 2000m square, or 4km2
-  st_as_sf() %>% 
-  st_transform(common_crs); plot(small_grd_wadandi)
-
-small_grd_wadandi <- st_intersection(small_grd_wadandi, buf) %>% 
-  st_make_valid() %>%
-  st_transform(common_crs) %>% 
-  dplyr::select(x)
-
-small_grd_wadandi <- st_intersection(small_grd_wadandi, bbox_wadandi) %>% 
-  st_as_sf() %>% 
-  st_collection_extract("POLYGON"); plot(small_grd_wadandi)
-
-small_grd_wadandi$type <- "shore_wadandi"
-
+small_grd$type <- "shore"
 
 ### -- 6.2 Offshore cells -----------------------------------------------------
 
-# over north cells
-hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
-plot(hab_north)
+# # over north cells
+# hab_north <- crop(hab, st_transform(bbox_north, crs(hab)))
+# plot(hab_north)
+# 
+# big_grd_north <- st_make_grid(bbox_north, cellsize = 4000, square = T) %>% st_transform(common_crs); plot(big_grd_north) # 10000m x 10000m square, or 100km2
+# 
+# big_grd_north <- st_intersection(big_grd_north, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
+#   st_make_valid() %>%
+#   st_transform(common_crs)
+# 
+# big_grd_north <- st_intersection(big_grd_north, bbox_north) %>% 
+#   st_as_sf() %>% 
+#   st_collection_extract("POLYGON"); plot(big_grd_north)
+# 
+# big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
+# 
+# big_grd_north$type <- "offshore_north"
+# 
+# 
+# # over wadandi cells
+# hab_wadandi <- crop(hab, st_transform(bbox_wadandi, crs(hab)))
+# plot(hab_wadandi)
+# 
+# big_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 4000, square = T) %>% st_transform(common_crs); plot(big_grd_wadandi) # 4000m x 4000m square, or 16km2
+# 
+# big_grd_wadandi <- st_intersection(big_grd_wadandi, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
+#   st_make_valid() %>%
+#   st_transform(common_crs)
+# 
+# big_grd_wadandi <- st_intersection(big_grd_wadandi, bbox_wadandi) %>% 
+#   st_as_sf() %>% 
+#   st_collection_extract("POLYGON"); plot(big_grd_wadandi)
+# 
+# big_grd_wadandi <- st_as_sf(big_grd_wadandi)
+# big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plot(big_grd_wadandi)
+# 
+# big_grd_wadandi$type <- "offshore_wadandi"
 
-big_grd_north <- st_make_grid(bbox_north, cellsize = 10000, square = T) %>% st_transform(common_crs); plot(big_grd_north) # 10000m x 10000m square, or 100km2
+hab <- crop(hab, st_transform(bbox_whole, crs(hab)))
+plot(hab)
 
-big_grd_north <- st_intersection(big_grd_north, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
+big_grd <- st_make_grid(bbox_whole, cellsize = 5000, square = T) %>% st_transform(common_crs); plot(big_grd) # 4000m x 4000m square, or 16km2
+
+big_grd <- st_intersection(big_grd, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
   st_make_valid() %>%
   st_transform(common_crs)
 
-big_grd_north <- st_intersection(big_grd_north, bbox_north) %>% 
-  st_as_sf() %>% 
-  st_collection_extract("POLYGON"); plot(big_grd_north)
+big_grd <- st_intersection(big_grd, bbox_whole) %>%
+  st_as_sf() %>%
+  st_collection_extract("POLYGON"); plot(big_grd)
 
-big_grd_north <- st_difference(big_grd_north, buf) %>% dplyr::select(x); plot(big_grd_north)
+big_grd <- st_as_sf(big_grd)
+big_grd <- st_difference(big_grd, buf) %>% dplyr::select(x); plot(big_grd)
 
-big_grd_north$type <- "offshore_north"
-
-
-# over wadandi cells
-hab_wadandi <- crop(hab, st_transform(bbox_wadandi, crs(hab)))
-plot(hab_wadandi)
-
-big_grd_wadandi <- st_make_grid(bbox_wadandi, cellsize = 4000, square = T) %>% st_transform(common_crs); plot(big_grd_wadandi) # 4000m x 4000m square, or 16km2
-
-big_grd_wadandi <- st_intersection(big_grd_wadandi, water_offshore_polygon) %>% # crop the grid to the extent of the habitat raster
-  st_make_valid() %>%
-  st_transform(common_crs)
-
-big_grd_wadandi <- st_intersection(big_grd_wadandi, bbox_wadandi) %>% 
-  st_as_sf() %>% 
-  st_collection_extract("POLYGON"); plot(big_grd_wadandi)
-
-big_grd_wadandi <- st_as_sf(big_grd_wadandi)
-big_grd_wadandi <- st_difference(big_grd_wadandi, buf) %>% dplyr::select(x); plot(big_grd_wadandi)
-
-big_grd_wadandi$type <- "offshore_wadandi"
+big_grd$type <- "offshore"
 
 
 ## 7. Merge all grids together ------------------------------------------------
 
-# merge the big and small grids together
-shore_grd <- rbind(small_grd_north, small_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(shore_grd)
-offshore_grd <- rbind(big_grd_north, big_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(offshore_grd)
+# # merge the big and small grids together
+# shore_grd <- rbind(small_grd_north, small_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(shore_grd)
+# offshore_grd <- rbind(big_grd_north, big_grd_wadandi) %>% st_transform(common_crs) %>% st_crop(bbox_whole); plot(offshore_grd)
 
-full_grd <- rbind(shore_grd, offshore_grd) %>% st_transform(common_crs) %>% st_crop(bbox_whole) %>% st_make_valid(); plot(full_grd)
+# full_grd <- rbind(shore_grd, offshore_grd) %>% st_transform(common_crs) %>% st_crop(bbox_whole) %>% st_make_valid(); plot(full_grd)
+full_grd <- rbind(small_grd, big_grd) %>% st_transform(common_crs) %>% st_crop(bbox_whole) %>% st_make_valid(); plot(full_grd)
+
 
 water_vect <- vect(full_grd) %>% project("EPSG:4326"); plot(water_vect)
 water_sf <- full_grd %>% 
@@ -338,7 +373,7 @@ ggplot(data = grd_final) +
 
 # save the grid and clean up in QGIS (removing shore cells that don't perfectly align with the large grids, at the south extremity)
 st_write(grd_final, "data/output_data/01_B_grid_to_cleanup.shp", append = F)
-grd_final <- st_read("data/output_data/Q_grid_cleaned_up_01_B.shp")
+#grd_final <- st_read("data/output_data/Q_grid_cleaned_up_01_B.shp")
 
 
 ## 8. Extract habitat values to the grid cells --------------------------------
