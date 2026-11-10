@@ -261,7 +261,7 @@ ggsave("plots/script_plot_checks/04_A/04_A_fishable_area_commercial.png", plot =
 water <- readRDS(file_water) |> st_transform(common_crs)
 
 # find shore. we will use this to calculate distance of all cells to shore.
-shore <- water[water$type %in% c("shore_wadandi", "shore_north"),] %>%
+shore <- water[water$type %in% c("shore"),] %>%
   st_make_valid() %>% 
   st_union() %>% 
   st_transform(common_crs) %>% 
@@ -390,16 +390,15 @@ ggsave("plots/script_plot_checks/04_A/04_A_access_point_distance_commercial.png"
 # -- we want to obtain one value per year, expressed in $/km
 
 # obtain fuel prices from the literature
-fuel_price <- read.csv("data/input_data/fuel_prices.csv") # data from https://www.bitre.gov.au/sites/default/files/is_082.pdf
+fuel_price <- readxl::read_xlsx("data/input_data/fuel_prices_all.xlsx", skip = 5) |> 
+  dplyr::select(year = YEAR, price_inflation = `FINAL PRICE`)
 
-# adjust for inflation
-base_cpi <- fuel_price$CPI[fuel_price$year == 2012]
-fuel_price$price_inflation <- fuel_price$petrol_price * (base_cpi / fuel_price$CPI) # adjust the fuel prices for inflation
+# i adjusted for inflation in the excel sheet, so now we only need to convert to $, and obtain price per km
 fuel_price$price_dollar <- fuel_price$price_inflation / 100 # convert into $
 
 plot(fuel_price$price_dollar ~ fuel_price$year, type = "l") # plot check
 
-fuel_price$price_per_km <- fuel_price$price_dollar / (1 / 2.54) # here we do cross-product of $, L and km. 2.54 is a value from Nicole Hamre
+fuel_price$price_per_km <- fuel_price$price_dollar / 2.54 # here we do cross-product of $, L and km. 2.54 is an average fuel consumption value from Nicole Hamre's PhD
 
 # fill in missing values
 fuel_price_clean <- data.frame(year = year_start:year_end) %>%
@@ -419,10 +418,18 @@ attractivity <- array(dim = c(NCELL, nrow(BR), 12, n_years_tot))
 for(YEAR in 1:n_years_tot) {
   for(MONTH in 1:12) {
     for (ACCESS in 1:nrow(BR)) {
-      attractivity[, ACCESS, MONTH,  YEAR] <- 
-        -0.01 * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
-        2.5 * log(shore_dist$shore_dist + 1) + # offshore dist
-        1 * log(cell_area + 1) # cell area
+      # Navarro et al. 2022 RUM values
+      attractivity[, ACCESS, MONTH,  YEAR] <-
+        -0.204 * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
+        0.848 * log(shore_dist$shore_dist + 1) + # offshore dist - opposite to boat recs' values, to encourage effort to be offshore
+        1.134 * log(cell_area + 1) # cell area
+
+      # Navarro et al. 2025 RUM values
+      # attractivity[, ACCESS, MONTH,  YEAR] <-
+      #   -0.015 * fuel_price_clean$price_per_km[YEAR] * (2 * as.numeric(access_dist[, ACCESS])) + # travel cost, with round-trip distance
+      #   0.18 * log(cell_area + 1) + # cell area
+      #   1.5 * log(shore_dist$shore_dist + 1) # offshore dist - opposite to boat recs' values, to encourage effort to be offshore
+      
       
       # and then we add the depth fishability, to turn off cells that are too deep
       attractivity[, ACCESS, MONTH, YEAR][fishable_depth_cell_year[,YEAR] == 0] <- NA # effort gets allocated to cells with high attractivity. here all cells have a negative attractivity, so we set unfishable cells to be even more negative than that
@@ -434,7 +441,7 @@ for(YEAR in 1:n_years_tot) {
 tail(attractivity[,1,12,125])
 
 # CHECK: attractivity of cells from the POV of few access points
-test_year = 100
+test_year = 50
 test_month = 12
 test_access = c(1, 10)  # your two access point indices
 p <- ggplot() +
@@ -469,23 +476,19 @@ attractivity <- lapply(1:12, function(m) {
 
 q <- readRDS("data/output_data/04_D_commercial_q.rds")$Q
 
-fishable_depth_expanded <- array(NA, dim = c(NCELL, 12, n_years_tot)); for (m in 1:12) {fishable_depth_expanded[, m, ] <- fishable_depth_cell_year}
-fishable_area <- water_area * fishable_depth_expanded # cell x month x year
-fishable_area_sum <- colSums(fishable_area) # month x year
-fishable_area_perc <- sweep(fishable_area, c(2, 3), fishable_area_sum, FUN = "/")
-catchability <- array(0, dim = dim(fishable_area))
-for (y in 1:dim(fishable_area)[3]) {
-  for (m in 1:12) {
-    catchability[, m, y] <- q[y] / fishable_area_perc[, m, y] # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
-  }
+catchability <- array(0, dim = c(NCELL, n_years_tot))
+
+for (y in 1:dim(catchability)[2]) {
+  catchability[, y] <- q[y] / water$cell_area # divide here - 1 unit of effort in a small area gets a lot of fish, but in a large area there's more 'places for fish not to be caught'
 }
+
 catchability[catchability == Inf] <- 0  # if cells are not fishable, division by zero (in loop above). change to zero to avoid messing everything up later on.
 
 
 # CHECK: catchability 
 test_year <- c(50, 100, 110)
-catch_mat <- catchability[, 1, test_year]  # matrix: cells x years
-catch_mat[catch_mat > 0.1] <- NA # some cells have extremely high catchability and make the plot flat - remove them to see fresh.
+catch_mat <- catchability[, test_year]  # matrix: cells x years
+#catch_mat[catch_mat > 0.1] <- NA # some cells have extremely high catchability and make the plot flat - remove them to see fresh.
 p <- ggplot(data = water %>%
               bind_cols(as.data.frame(catch_mat) %>%
                           setNames(paste0("year_", test_year))) %>%
@@ -496,13 +499,27 @@ p <- ggplot(data = water %>%
                 names_transform = as.numeric,
                 values_to = "catchability"
               )) +
-  geom_sf(aes(fill = catchability), colour = NA) +
+  geom_sf(aes(fill = (catchability)), colour = NA) +
   scale_fill_gradientn(colours = colour_palette[c(3, 5)]) +
   facet_wrap(~ year) +
   ggtitle("cells with catchability <0.1 are shown, for display purposes. these cells which end up with high catchability due to small size") +
   theme_minimal()
+p
 ggsave("plots/script_plot_checks/04_A/04_A_catchability_commercial.png", plot = p, width = 7, height = 10, dpi = 500)
 
+test_year <- c(50)
+catch_mat <- catchability[, test_year]  # matrix: cells x years
+
+mapview::mapview(water[, !is.list(water)] %>%
+                   bind_cols(as.data.frame(catch_mat) %>%
+                               setNames(paste0("year_", test_year))) %>%
+                   tidyr::pivot_longer(
+                     cols = starts_with("year_"),
+                     names_to = "year",
+                     names_prefix = "year_",
+                     names_transform = as.numeric,
+                     values_to = "catchability"
+                   ), zcol = "catchability")
 
 ## 4. Fishing effort values ---------------------------------------------------
 
@@ -537,6 +554,13 @@ seasonal_multipliers <- c( # see figure 21c in Ryan et al. 2022 - THIS IS FOR RE
   "05" = 0.033, "06" = 0.033, "07" = 0.033, "08" = 0.033,
   "09" = 0.033, "10" = 0.065, "11" = 0.11, "12" = 0.26
 )
+
+# seasonal_multipliers <- c( # see google sheet, derived from table 24 p.67 in https://library.dpird.wa.gov.au/cgi/viewcontent.cgi?article=1155&context=fr_rr\
+#   "01" = 0.073, "02" = 0.085, "03" = 0.105, "04" = 0.102,
+#   "05" = 0.093, "06" = 0.064, "07" = 0.079, "08" = 0.091,
+#   "09" = 0.075, "10" = 0.086, "11" = 0.077, "12" = 0.069
+# )
+
 seasonal_multipliers <- seasonal_multipliers / sum(seasonal_multipliers) # standardise so it adds up to 1
 barplot(seasonal_multipliers, col = colour_palette[6], main = "distribution of yearly \nboat fishing effort by month in % \n(deduced from Ryan et al. 2022, fig. 21c)")
 
@@ -799,9 +823,13 @@ dimnames(access_point_effort)[[2]] <- c(1:length(dimnames(access_point_effort)[[
 ## 5. Create a list to use in the C++ function --------------------------------
 
 # little details to include in the final list
-coef_values <- tibble(expected_catch = 1,
-                      expected_catch_sq = 1
-) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for rec fishing
+coef_values <- tibble(expected_catch = 1.5,
+                      expected_catch_sq = 1.43
+) # coefficients from Matt's 2022 paper. they weigh the relative importance of each for the distribution of effort. the paper was for boat rec fishing
+
+# coef_values <- tibble(expected_catch = 1.43, # see section 2.4 for explanation
+#                       expected_catch_sq = 0 # no square term in the 2025 paper, see section 2.4 for explanation
+# ) # coefficients from Matt's 2025 paper. they weigh the relative importance of each for the distribution of effort. the paper was for boat rec fishing
 
 fishing_info_list <- list(catchability, 
                           attractivity, 
