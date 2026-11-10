@@ -62,7 +62,8 @@ water <- readRDS(file_water) %>%
 plot(water)
 
 com_metro_closure <- water %>% 
-  dplyr::filter(type %in% c("shore_north", "offshore_north")) %>% 
+  mutate(lat = st_coordinates(st_centroid(st_geometry(.)))[, 2]) %>%
+  filter(lat > -33) %>%   # adjust the cutoff to your northern boundary
   summarise(geometry = st_union(geometry)) %>%
   st_sf(geometry = .) %>%  # convert geometry back to sf
   mutate( # make sure names match with NTZ above
@@ -88,59 +89,106 @@ NTZ <- rbind(com_closure_only, NTZ)
 plot(NTZ$geometry, col = "red")
 
 
-## 2. Make a temporal closure area --------------------------------------------
+## 2. Temporal closures -------------------------------------------------------
 
-# TC = temporal closure
-TC_poly <- matrix(c(
-  115.749655, -32.073611, # NE point
-  115.608333, -32.073611, # NW point
-  115.652778, -32.380851, # SW point
-  115.724430, -32.380851, # becher point
-  115.849846, -32.313575, # close polygon back to freo
-  115.841356, -32.167078  # close polygon back to freo
-), 
-ncol = 2, byrow = TRUE,
-dimnames = list(NULL, c("lon", "lat")))
+# here we have two sets of temporal closures: the spawning closure applies to all fishers, and the non-school holiday closure applies to boat rec fishers only
+# because the non-school holiday closure applies to all cells, it's dealt within script 04_C, section 1.3. (it's easier to zero out the whole thing there.)
 
-pts <- st_as_sf(
-  data.frame(lon = TC_poly[,1], lat = TC_poly[,2]),
-  coords = c("lon", "lat"),
-  crs = 4326
-)
-TC <- st_convex_hull(st_union(pts))
-TC <- st_as_sf(st_transform(TC, st_crs(water)))
+### 2.1 Derbal Nara/Cockburn sound spawning closure ---------------------------
 
-sf::sf_use_s2(FALSE)
-TC <- st_intersection(TC, st_make_valid(st_union(water)))
+temp_land <- land |>
+  st_transform(common_crs) |>
+  st_make_valid() |> 
+  st_union() |>
+  st_make_valid()
 
-plot(TC, col = NA, border = "red", lwd = 2); plot(water$geometry, add = T)
+zone_1 <- st_read("data/input_data/2000_cockburn_sound_closure.shp") |> 
+  st_make_valid() |> 
+  st_transform(common_crs)
+zone_1 <- st_difference(zone_1, temp_land) |> dplyr::select(geometry)
+plot(zone_1$geometry)
+
+zone_2 <- st_read("data/input_data/2007_cockburn_sound_closure.shp") |> 
+  st_make_valid() |> 
+  st_transform(common_crs)
+zone_2 <- st_difference(zone_2, temp_land) |> dplyr::select(geometry)
+plot(zone_2$geometry)
+
+zone_3 <- st_read("data/input_data/2019_cockburn_sound_closure.shp") |> 
+  st_make_valid() |> 
+  st_transform(common_crs)
+zone_3 <- st_difference(zone_3, temp_land) |> dplyr::select(geometry)
+plot(zone_3$geometry)
+
+
+zone_2 <- st_difference(st_geometry(zone_2), st_union(st_geometry(zone_1))) |>
+  st_make_valid() |>
+  st_collection_extract("POLYGON") |>
+  st_cast("MULTIPOLYGON") |>
+  st_cast("POLYGON") |>
+  st_sf(geometry = _) |>
+  mutate(area = as.numeric(st_area(geometry)),
+         TC_zone = "2") |>
+  dplyr::select(geometry, TC_zone)
+
+zone_3 <-  st_difference(st_geometry(zone_3), st_union(c(st_geometry(zone_1), st_geometry(zone_2)))) |>
+  st_make_valid() |>
+  st_collection_extract("POLYGON") |>
+  st_cast("MULTIPOLYGON") |>
+  st_cast("POLYGON") |>
+  st_sf(geometry = _) |>
+  mutate(area = as.numeric(st_area(geometry)),
+         TC_zone = "3") |>
+  dplyr::select(geometry, TC_zone)
+
+zone_1 <- zone_1 |> 
+  mutate(TC_zone = "1") |> 
+  dplyr::select(geometry, TC_zone)
+
+zones <- rbind(zone_1, zone_2, zone_3)
+
+ggplot(data = zones) +
+  geom_sf(aes(fill = TC_zone, col = TC_zone))
+
+
+# 2000: cockburn sound only,                15sep - 31oct,    source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
+# 2005: cockburn sound only,                01oct - 15dec,    source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
+# 2007: cockburn + warnbro sounds,          01oct - 15dec,    source: http://fishwrecked.com/forum/cockburn-and-warnbro-sounds-close-monday-1st-october
+# 2019: cockburn + warnbro sounds expanded, 01sep - 31jan,    source: https://www.watoday.com.au/national/western-australia/the-push-to-protect-one-of-wa-s-most-prized-catches-gets-a-boost-20190711-p526ew.html?utm_source=Members+First&utm_campaign=84080295ac-EMAIL_CAMPAIGN_2019_01_11_07_31_COPY_01&utm_medium=email&utm_term=0_1caa0fe7e8-84080295ac-162137549&mc_cid=84080295ac&mc_eid=%5Bea10192d13
+# 2023: cockburn + warnbro sounds expanded, 01aug - 31jan,    source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
 
 # below is a list and description of temporal restrictions. i've made it this way because it's easier to see and modify in the code, in case there are more temporal closures or more complex ones.
 temporal_closure_details = list(
-#   YEAR,   MONTHS,           PERCENT OF EACH MONTH THAT IS FISHED
-  c("2000", "9-10",           "0.5-0"),
-  c("2005", "10-11-12",       "0-0-0.5"),
-  c("2023", "8-9-10-11-12-1", "0-0-0-0-0-0")
-)
+  #  ZONE,    YEAR,   MONTHS,           PERCENT OF EACH MONTH THAT IS FISHED
+  c("1",   "2000", "9-10",           "0.5-0"),
+  c("1",   "2005", "10-11-12",       "0-0-0.5"),
+  c("1",   "2019", "9-10-11-12-1",   "0-0-0-0-0"),
+  c("1",   "2023", "8-9-10-11-12-1", "0-0-0-0-0-0"),
+  c("2",   "2007", "10-11-12",       "0-0-0.5"),
+  c("2",   "2019", "9-10-11-12-1",   "0-0-0-0-0"),
+  c("2",   "2023", "8-9-10-11-12-1", "0-0-0-0-0-0"),
+  c("3",   "2019", "9-10-11-12-1",   "0-0-0-0-0"),
+  c("3",   "2023", "8-9-10-11-12-1", "0-0-0-0-0-0")
+) # every expansion should be included for every zone.
 
-TC <- TC %>% 
-  mutate(
-    name = "Cockburn Sound temporal closure", # WHATEVER NAME IS HERE SHOULD HAVE THE EXACT TERMS 'temporal closure' IN IT OR THE REST WON'T WORK
-    TC_restriction_date = list(as.integer(vapply(temporal_closure_details, `[`, "", 1))),
-    TC_restriction_months = list(vapply(temporal_closure_details, `[`, "", 2)),
-    TC_restriction_perc_fished = list(vapply(temporal_closure_details, `[`, "", 3))
-  ) %>% 
-  rename(
-    geometry = x
-  )
 
-# 2000: 15sep - 31oct, source: https://www.wa.gov.au/government/media-statements/Court%20Coalition%20Government/Cockburn-Sound-spawning-closure-gets-go-ahead-20000830
-# 2005: 01oct - 15dec source: https://www.wa.gov.au/government/media-statements/Gallop%20Labor%20Government/Spawning-closures-protect-Perth%27s-pink-snapper-20050819
-# 2023: 01aug - 31jan, source: https://www.wa.gov.au/government/announcements/recreational-demersal-fishing-closure-aid-stock-recovery
+TC_list <- list()
 
-# add the closures in the NTZ dataframe
-closures <- bind_rows(TC, NTZ)
-plot(closures[, !sapply(closures, is.list)])
+for (ZONE in unique(zones$TC_zone)) {
+  temp <- zones[zones$TC_zone == ZONE, ] # extract the right zone
+  d <- Filter(function(x) x[1] == ZONE, temporal_closure_details) # extract the temporal closures that apply to it
+  
+  temp$name <- paste("Cockburn Sound temporal closure zone", ZONE) # name the zone
+  
+  # paste all the restrictions correctly
+  temp$TC_restriction_date        <- list(as.integer(vapply(d, `[`, "", 2))) 
+  temp$TC_restriction_months      <- list(vapply(d, `[`, "", 3))
+  temp$TC_restriction_perc_fished <- list(vapply(d, `[`, "", 4))
+  
+  TC_list[[ZONE]] <- temp
+}
+
+TC <- do.call(rbind, TC_list) # one sf, one row per zone
 
 
 ## 3. Adjusting the grid to account for temporal/spatial closures -------------
@@ -156,7 +204,7 @@ cols <- c("ID", "name", "zone_type", "zone", "epbc", "type",
           "geometry")
 
 # obtained grid cells that are fished
-fished <- st_difference(water, st_union(NTZ)) %>% # takes a while
+fished <- st_difference(water, st_make_valid(st_union(closures))) %>% # takes a while
   mutate(
     SC_status = FALSE,
     TC_status = FALSE,
@@ -165,44 +213,69 @@ fished <- st_difference(water, st_union(NTZ)) %>% # takes a while
     TC_restriction_perc_fished = list(NA),
     SC_restriction_date = list(NA)
   )
-fished$area <- st_area(fished) 
+fished$area <- st_area(fished)
 fished <- fished[as.numeric(fished$area) > 1,] # the st_difference leaves very small features around the coast - filter them out by keeping cells > 1m2
 mapview::mapview(fished[!is.list(fished)]) # check things make sense
 
 
 # obtain grid cells that are temporal closure (HERE THE CLOSURE OVERLAPS COMPLETELY WITH THE NTZ. OTHERWISE ST_DIFFERENCE IS NEEDED)
-TC_area <- st_intersection(water, TC, sparse = F) %>% 
+TC_area <- st_intersection(water, TC) %>% 
   mutate(zone_type = NA, 
          zone = NA) %>% 
   st_make_valid() %>%
   st_transform(common_crs)
+plot(TC_area$geometry)
 TC_SC_overlap <- st_intersection(TC_area, NTZ) %>% 
   mutate(
     TC_status = TRUE,
     SC_status = TRUE
-    )
+    ) |> 
+  st_make_valid() |> 
+  st_collection_extract("POLYGON") |>   # drops stray points/lines
+  st_cast("MULTIPOLYGON") |>            # make the column uniform first
+  st_cast("POLYGON")                    # now keeps every part, one row each
+plot(TC_SC_overlap$geometry)
+
 mapview::mapview(TC_SC_overlap[!is.list(TC_SC_overlap)])
 
 
 # make a grid for areas that are spatial closure only
-NTZarea <- st_intersection(NTZ, water) %>% 
+NTZarea <- st_intersection(water, NTZ) %>%
   st_make_valid() %>%
+  filter(!st_is_empty(geometry)) %>%
   st_transform(common_crs)
 plot(NTZarea$geometry)
 
-SC_only <- st_difference(NTZarea, st_union(TC_SC_overlap)) %>%
+TC_slim <- TC %>%
+  dplyr::select(TC_name = name, TC_zone,
+         TC_restriction_date, TC_restriction_months, TC_restriction_perc_fished)
+
+TC_SC_overlap <- st_intersection(TC_slim, NTZarea) %>%
+  mutate(TC_status = TRUE,
+         SC_status = TRUE) %>%
+  st_make_valid() %>%
+  filter(!st_is_empty(geometry)) %>%
+  st_collection_extract("POLYGON") %>%
+  st_cast("MULTIPOLYGON") %>%
+  st_cast("POLYGON")
+
+SC_only <- st_difference(NTZarea, st_union(TC_slim)) %>%
   mutate(
     SC_status = TRUE,
     TC_status = FALSE,
     TC_restriction_date = list(NA),
     TC_restriction_months = list(NA),
     TC_restriction_perc_fished = list(NA)
-  ) %>% 
-  dplyr::select(any_of(cols)) %>% 
-  dplyr::filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON"))
+  ) %>%
+  st_make_valid() %>%
+  filter(!st_is_empty(geometry)) %>%
+  st_collection_extract("POLYGON") %>%
+  st_cast("MULTIPOLYGON") %>%
+  st_cast("POLYGON") %>%
+  dplyr::select(any_of(cols))
+
 SC_only$area <- st_area(SC_only)
-SC_only <- SC_only[as.numeric(SC_only$area) > 1,] # the st_difference leaves very small features around the coast - filter them out by keeping cells > 1m2
-mapview::mapview(SC_only[!is.list(SC_only)])
+SC_only <- SC_only[as.numeric(SC_only$area) > 100, ]
 
 # check that everything lines up
 plot(SC_only$geometry, col = "red")
@@ -223,16 +296,15 @@ water <- bind_rows(
 plot(water$geometry, col = "red")
 mapview::mapview(water[!is.list(water)])
 
-
-# Check that the NTZs are where you expect them to be
+# check that the NTZs are where you expect them to be
 ggplot(water) +
   geom_sf(aes(fill = SC_status), col = NA) +
   theme_void() +
-  scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
+  scale_fill_manual(values = c(colour_palette[3], colour_palette[5], colour_palette[6], colour_palette[2]))
 ggplot(water) +
   geom_sf(aes(fill = TC_status), col = NA) +
   theme_void() +
-  scale_fill_manual(values = c(colour_palette[4], colour_palette[5], colour_palette[6], colour_palette[2]))
+  scale_fill_manual(values = c(colour_palette[3], colour_palette[5], colour_palette[6], colour_palette[2]))
 
 mapview::mapview(water[!is.list(water)])
 
@@ -286,6 +358,9 @@ mapview::mapview(water[!is.list(water)])
 
 # Calculating grid cell area and removing cells < 1m2
 water <- water %>%
+  st_collection_extract("POLYGON") %>%
+  st_cast("MULTIPOLYGON") %>%
+  st_cast("POLYGON") %>%
   mutate(cell_area = st_area(geometry),
          ID = row_number()) %>% 
   filter(as.numeric(cell_area)>1)
@@ -304,9 +379,10 @@ mapview::mapview(water[!is.list(water)], alpha = 0.1)
 p <- ggplot() +
   geom_sf(data = water,
           aes(fill = name), col = "gray") +
-  scale_fill_manual(values = colorRampPalette(colour_palette)(8), na.value = "transparent") +
+  scale_fill_manual(values = colorRampPalette(colour_palette)(11), na.value = "transparent") +
   coord_sf() +
   theme_minimal()
+p
 ggsave("plots/script_plot_checks/02/02_grid_closures.png", plot = p, width = 6, height = 10, dpi = 500)
 
 # .rds
