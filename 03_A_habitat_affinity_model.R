@@ -332,15 +332,15 @@ save_as_image(ft, path = "plots/script_plot_checks/03_A/03_A_model_table.png")
 
 # -- BRUV data may be zero-inflated (more zeroes than expected)
 # -- we will test for zero-inflation by calculating how many zeroes our model expects
-pred <- predict(glm_nb_p, type = "response")
-theta <- sigma(glm_nb_p)
-expected_zero_prob <- (theta / (theta + pred))^theta
-sum(expected_zero_prob) # about 500 zeroes are expected
-sum(dat_final$count == 0) # we have 550 zeroes ... it's a bit over what the model expects, let's test whether this is significant
-
-sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb_p)
-plot(sim_nb)
-DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that our data is not zero-inflated. 
+# pred <- predict(glm_nb_p, type = "response")
+# theta <- sigma(glm_nb_p)
+# expected_zero_prob <- (theta / (theta + pred))^theta
+# sum(expected_zero_prob) # about 500 zeroes are expected
+# sum(dat_final$count == 0) # we have 550 zeroes ... it's a bit over what the model expects, let's test whether this is significant
+# 
+# sim_nb <- DHARMa::simulateResiduals(fittedModel = glm_nb_p)
+# plot(sim_nb)
+# DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that our data is not zero-inflated. 
 # -- we can use a normal negative binomial model to model this data.
 
 
@@ -402,18 +402,18 @@ DHARMa::testZeroInflation(sim_nb)  # p-value is non-significant, meaning that ou
 # -- there is a nested structure to the data (2 sampling sites: GB and SW), which violates the assumption of independence of errors.
 # -- a GLMM accounts for this with random effects for location (by adding + (1 | location)).
 
-glmm_zinb <- glmmTMB(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
-                     count ~ depth + depth2 +
-                       size_class +
-                       reef + sand + 
-                       size_class:depth +
-                       size_class:depth2 +
-                       size_class:reef + 
-                       size_class:sand +
-                       (1 | location), # the random effect accounting for nesting.
-                     family = nbinom2,
-                     ziformula = ~1) # zero inflation model
-summary(glmm_zinb)
+# glmm_zinb <- glmmTMB(data = dat, # 'count is dependent on depth, size class, and habitat, and the effect of habitat depends on size class.'
+#                      count ~ depth + depth2 +
+#                        size_class +
+#                        reef + sand + 
+#                        size_class:depth +
+#                        size_class:depth2 +
+#                        size_class:reef + 
+#                        size_class:sand +
+#                        (1 | location), # the random effect accounting for nesting.
+#                      family = nbinom2,
+#                      ziformula = ~1) # zero inflation model
+# summary(glmm_zinb)
 # -- the model is full of NaN - because 1. there isnt much difference in count between the locations - 2. there aren't enough sites (>5 recommended for GLMM)
 # -- it could be an over-parameteristion problem but removing effects is not a good move here because we need all those covariates for the purposes of our model.
 
